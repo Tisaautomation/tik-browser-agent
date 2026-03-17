@@ -953,25 +953,26 @@ class BrowserAgent:
             page.on("dialog", handle_dialog)
             
             # Debug: check page state before submitting
-            debug = await page.evaluate("""() => {
-                const info = {};
-                info.isGroupMode = typeof isGroupMode !== 'undefined' ? isGroupMode : 'undefined';
-                info.programVal = document.getElementById('program-select')?.value || 'no-program';
-                info.groupVal = document.getElementById('group-select')?.value || 'no-group-select';
-                info.dateVal = document.getElementById('tour-date')?.value || 'no-date';
-                info.phoneVal = document.querySelector('input[name="properties[WhatsApp Number]"]')?.value || 'no-phone';
-                info.locationVal = document.getElementById('pickup-location')?.value || 'no-location';
-                info.adultsVal = document.getElementById('adults-qty')?.value || 'no-adults';
-                info.childrenVal = document.getElementById('children-qty')?.value || 'no-children';
-                info.infantsVal = document.getElementById('infants-qty')?.value || 'no-infants';
-                info.hasBookingData = typeof window.bookingData !== 'undefined' ? JSON.stringify(window.bookingData).substring(0, 300) : 'undefined';
-                info.formExists = !!document.getElementById('product-form');
-                info.submitBtnExists = !!document.querySelector('.submit-btn');
-                info.submitBtnDisabled = document.querySelector('.submit-btn')?.disabled || false;
-                // Check variants
-                info.variants = typeof productVariants !== 'undefined' ? productVariants.map(v => v.option1 + '/' + v.option2).join(',') : 'undefined';
-                return info;
-            }""")
+            try:
+                debug = await page.evaluate("""() => {
+                    try {
+                        const info = {};
+                        info.isGroupMode = typeof isGroupMode !== 'undefined' ? isGroupMode : 'undefined';
+                        info.program = document.getElementById('program-select')?.value || 'none';
+                        info.group = document.getElementById('group-select')?.value || 'none';
+                        info.date = document.getElementById('tour-date')?.value || 'none';
+                        info.phone = document.querySelector('input[name="properties[WhatsApp Number]"]')?.value || 'none';
+                        info.location = document.getElementById('pickup-location')?.value || 'none';
+                        info.adults = document.getElementById('adults-qty')?.value || '0';
+                        info.children = document.getElementById('children-qty')?.value || '0';
+                        info.infants = document.getElementById('infants-qty')?.value || '0';
+                        info.form = !!document.getElementById('product-form');
+                        info.btn = !!document.querySelector('.submit-btn');
+                        return info;
+                    } catch(e) { return { error: e.message }; }
+                }""")
+            except Exception:
+                debug = {"error": "debug eval failed"}
             
             # Trigger price calc
             await page.evaluate("""() => {
@@ -1006,11 +1007,11 @@ class BrowserAgent:
                 if items > 0:
                     s.done(ss, f"Cart: {items} items, {cart_data.get('total', 0)} THB")
                 elif alert_messages:
-                    s.fail(f"Alert: {' | '.join(alert_messages)} | Debug: {json.dumps(debug)[:300]}", ss)
+                    s.fail(f"Alert: {' | '.join(alert_messages)} | Debug: {str(debug)[:300]}", ss)
                 else:
-                    s.fail(f"Cart empty, no alerts. Debug: {json.dumps(debug)[:400]}", ss)
+                    s.fail(f"Cart empty, no alerts. Debug: {str(debug)[:400]}", ss)
             else:
-                s.fail(f"No submit btn. Debug: {json.dumps(debug)[:300]}", await self.screenshot_b64(page))
+                s.fail(f"No submit btn. Debug: {str(debug)[:300]}", await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
