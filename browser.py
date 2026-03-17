@@ -393,19 +393,35 @@ class BrowserAgent:
             s.fail(str(e))
         steps.append(s)
 
-        s = Step("Checkout page accessible")
+        s = Step("Checkout form accessible on cart page")
         try:
-            # Shopify uses JS-rendered accelerated checkout — go directly to /checkout
-            resp = await page.goto(f"{SHOP_URL}/checkout", wait_until="domcontentloaded", timeout=15000)
+            # TIK uses a custom checkout form on /cart — NOT Shopify's /checkout
+            await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3000)
+            
+            # Check for custom TIK checkout elements
+            checkout_btn = await page.query_selector("#checkout-btn, .checkout-btn, button:has-text('Complete Booking')")
+            name_field = await page.query_selector("#customer-name, input[name='customer_name']")
+            email_field = await page.query_selector("#customer-email, input[name='customer_email']")
+            payment_options = await page.query_selector_all("input[name='payment_method']")
+            
             ss = await self.screenshot_b64(page)
-            current_url = page.url
-            if "checkout" in current_url.lower() or "checkouts" in current_url.lower():
-                s.done(ss, f"Checkout loaded: {current_url[:100]}")
-            elif "cart" in current_url.lower():
-                s.done(ss, "Redirected to cart — cart may be empty")
+            notes = []
+            if checkout_btn: notes.append("Complete Booking btn")
+            if name_field: notes.append("Name field")
+            if email_field: notes.append("Email field")
+            if payment_options: notes.append(f"{len(payment_options)} payment methods")
+            
+            if checkout_btn and name_field and email_field:
+                s.done(ss, " | ".join(notes))
+            elif not checkout_btn and not name_field:
+                empty = await page.query_selector(".cart-empty")
+                if empty:
+                    s.fail("Cart is empty — checkout form not shown", ss)
+                else:
+                    s.fail(f"Custom checkout form not found. Found: {' | '.join(notes) or 'nothing'}", ss)
             else:
-                s.fail(f"Unexpected redirect: {current_url}", ss)
+                s.done(ss, f"Partial form: {' | '.join(notes)}")
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
@@ -790,34 +806,59 @@ class BrowserAgent:
             s.fail(str(e))
         steps.append(s)
 
-        s = Step("Navigate to checkout")
+        s = Step("Checkout form visible on cart page")
         try:
-            await page.goto(f"{SHOP_URL}/checkout", wait_until="domcontentloaded", timeout=20000)
+            # TIK checkout form is embedded in /cart page — NOT Shopify /checkout
+            await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3000)
+            
+            checkout_btn = await page.query_selector("#checkout-btn, .checkout-btn, button:has-text('Complete Booking')")
+            name_field = await page.query_selector("#customer-name, input[name='customer_name']")
+            email_field = await page.query_selector("#customer-email, input[name='customer_email']")
+            
             ss = await self.screenshot_b64(page)
-            url = page.url
-            if "checkout" in url.lower() or "checkouts" in url.lower():
-                s.done(ss, f"Checkout loaded: {url[:120]}")
+            if checkout_btn and name_field and email_field:
+                s.done(ss, "Full TIK checkout form found on /cart")
             else:
-                s.fail(f"Checkout not reached: {url}", ss)
+                parts = []
+                if not checkout_btn: parts.append("no checkout button")
+                if not name_field: parts.append("no name field")
+                if not email_field: parts.append("no email field")
+                s.fail(f"Checkout form incomplete: {', '.join(parts)}", ss)
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
-        s = Step("Checkout page has contact/shipping fields")
+        s = Step("Fill test customer info and verify Complete Booking button")
         try:
-            # Look for standard Shopify checkout fields
-            email_field = await page.query_selector("input[type='email'], input[name*='email'], #email")
-            ss = await self.screenshot_b64(page)
-            if email_field:
-                s.done(ss, "Email field found on checkout")
-            else:
-                # Might be behind Shopify login wall
-                page_text = await page.inner_text("body")
-                if "contact" in page_text.lower() or "shipping" in page_text.lower() or "checkout" in page_text.lower():
-                    s.done(ss, "Checkout content visible")
+            name_field = await page.query_selector("#customer-name")
+            email_field = await page.query_selector("#customer-email")
+            
+            if name_field and email_field:
+                await name_field.fill("Mystery Shopper Test")
+                await email_field.fill("test@tourinkohsamui.com")
+                
+                # Select Cash On Tour payment (safest for test — no real payment)
+                payment = await page.query_selector("input[name='payment_method'][value='cash']")
+                if payment:
+                    await payment.evaluate("el => el.click()")
+                
+                await page.wait_for_timeout(1000)
+                
+                # Verify button is clickable but do NOT click (test mode)
+                checkout_btn = await page.query_selector("#checkout-btn:not(:disabled)")
+                ss = await self.screenshot_b64(page)
+                
+                if checkout_btn:
+                    s.done(ss, "Form filled, payment selected, Complete Booking ready — NOT submitting (test)")
                 else:
-                    s.fail("No checkout fields found", ss)
+                    btn_disabled = await page.query_selector("#checkout-btn:disabled")
+                    if btn_disabled:
+                        s.fail("Complete Booking button is disabled", ss)
+                    else:
+                        s.fail("Complete Booking button not found after fill", ss)
+            else:
+                s.fail("Cannot fill form — fields not found", await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
