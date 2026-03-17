@@ -85,6 +85,7 @@ async def full_audit(req: AuditRequest, x_agent_token: str = Header(...)):
         "chatbot": ["chatbot_basic", "chatbot_tour_query", "chatbot_refund_query"],
         "finance": ["finance_login", "finance_orders"],
         "quick": ["homepage", "tour_search"],
+        "mystery": ["mystery_shopper"],
     }.get(req.target, ["homepage"])
     agent = BrowserAgent()
     brain = WarMachineBrain()
@@ -221,6 +222,29 @@ async def verify_order(req: OrderCheckRequest, x_agent_token: str = Header(...))
     verify_token(x_agent_token)
     return JSONResponse(content=await WarMachineOps.verify_order_e2e(req.order_number))
 
+
+
+
+# ─── MYSTERY SHOPPER ─────────────────────────────────────────────
+class MysteryShopperRequest(BaseModel):
+    tour_handle: Optional[str] = ""
+    viewport: Optional[str] = "desktop"
+
+@app.post("/mystery-shop")
+async def mystery_shop(req: MysteryShopperRequest, x_agent_token: str = Header(...)):
+    """Run a full mystery shopper flow on a specific tour"""
+    verify_token(x_agent_token)
+    agent = BrowserAgent(viewport=req.viewport)
+    brain = WarMachineBrain()
+    try:
+        result = await agent.run_scenario("mystery_shopper", {"tour_handle": req.tour_handle})
+        analysis = await brain.analyze(result)
+        result["ai_analysis"] = analysis
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        await agent.close()
 
 if __name__ == "__main__":
     import uvicorn
