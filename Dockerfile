@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Chromium system deps
 RUN apt-get update && apt-get install -y \
     wget curl gnupg ca-certificates \
     fonts-liberation libappindicator3-1 libasound2 libatk-bridge2.0-0 \
@@ -13,10 +12,9 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install only Chromium (not full Playwright suite)
 RUN playwright install chromium
 
 COPY . .
+RUN chmod +x start.sh
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["/bin/sh", "start.sh"]
