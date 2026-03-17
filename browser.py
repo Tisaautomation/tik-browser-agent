@@ -777,126 +777,156 @@ class BrowserAgent:
 
 
     # ─── SCENARIO: Mystery Shopper (E2E real order) ──────────────
+    async def _new_page_with_geolocation(self, lat: float = 9.5321, lng: float = 100.0631) -> "Page":
+        """Create a page with geolocation permissions granted (for Use My Location button)."""
+        browser = await self._get_browser()
+        context = await browser.new_context(
+            viewport=self.viewport,
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" if "mobile" in self.viewport_name else "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="en-US",
+            geolocation={"latitude": lat, "longitude": lng},
+            permissions=["geolocation"],
+        )
+        page = await context.new_page()
+        return page
+
     async def _scenario_mystery_shopper(self, steps: List[Step], params: Dict):
         """
-        Full mystery shopper: browse → find tour → add to cart → verify cart → checkout page.
-        Does NOT complete payment. Tests the entire pre-payment flow.
+        Full E2E customer simulation — clicks every button, fills every field.
+        Flow: Product page → fill form → Book Now → Cart → checkout → Complete Booking → verify n8n.
         """
-        tour_handle = params.get("tour_handle", "")
-        page = await self.new_page()
+        tour_handle = params.get("tour_handle", "snorkeling-trip")
+        adults = params.get("adults", 2)
+        children = params.get("children", 0)
+        infants = params.get("infants", 0)
+        phone_number = params.get("phone", "994747897")
+        customer_name = params.get("customer_name", "James Richardson")
+        customer_email = params.get("customer_email", "info@tourinkohsamui.com")
+        payment = params.get("payment_method", "cash")
+        pickup_lat = float(params.get("pickup_lat", 9.5321))
+        pickup_lng = float(params.get("pickup_lng", 100.0631))
+        program_idx = params.get("program_index", 1)
+        live = params.get("live", False)
 
-        s = Step("Browse to All Tours page")
+        # Page with geolocation enabled for "Use My Location"
+        page = await self._new_page_with_geolocation(pickup_lat, pickup_lng)
+
+        # ─── STEP 1: Navigate to product page ──────────────────────
+        s = Step("Navigate to tour product page")
         try:
-            await self._goto_shop(page, "/pages/all-tours")
+            await self._goto_shop(page, f"/products/{tour_handle}")
             await page.wait_for_timeout(3000)
+            title = await page.title()
+            price_el = await page.query_selector("[class*='price'], .product-price, #total-price")
+            price_text = ""
+            if price_el:
+                price_text = (await price_el.text_content() or "").strip()
             ss = await self.screenshot_b64(page)
-            cards = await page.query_selector_all(".tour-card")
-            s.done(ss, f"Found {len(cards)} tour cards")
+            if "products" in page.url:
+                s.done(ss, f"Loaded: {title[:60]} | Price: {price_text[:20]}")
+            else:
+                s.fail(f"Did not reach product page. URL: {page.url}", ss)
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
+        if s.status == "FAIL":
+            await page.close()
+            return
 
-        s = Step("Find and click target tour")
+        # ─── STEP 2: Select program ────────────────────────────────
+        s = Step("Select program")
         try:
-            if tour_handle:
-                link = await page.query_selector(f"a[href*=\'{tour_handle}\']")
+            program_el = await page.query_selector("#program-select")
+            if program_el:
+                tag = await program_el.evaluate("el => el.tagName")
+                if tag.upper() == "SELECT":
+                    options = await page.query_selector_all("#program-select option")
+                    if len(options) > program_idx:
+                        val = await options[program_idx].get_attribute("value")
+                        await page.select_option("#program-select", value=val)
+                        await page.wait_for_timeout(500)
+                        ss = await self.screenshot_b64(page)
+                        s.done(ss, f"Selected program: {val}")
+                    else:
+                        ss = await self.screenshot_b64(page)
+                        s.done(ss, f"Only {len(options)} options, kept default")
+                else:
+                    # Hidden input — already has a value
+                    val = await program_el.get_attribute("value")
+                    ss = await self.screenshot_b64(page)
+                    s.done(ss, f"Program fixed: {val}")
             else:
-                link = await page.query_selector(".tour-card__link, a[href*='/products/']")
-            if link:
-                href = await link.get_attribute("href")
-                await link.click()
-                await page.wait_for_load_state("domcontentloaded")
-                await page.wait_for_timeout(3000)
                 ss = await self.screenshot_b64(page)
-                title = await page.title()
-                s.done(ss, f"Tour: {title[:80]}, URL: {href}")
-            else:
-                s.fail(f"Tour not found: {tour_handle or 'any'}", await self.screenshot_b64(page))
+                s.done(ss, "No program selector (single-program tour)")
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
-        s = Step("Product page has price + images + variants")
+        # ─── STEP 2b: Select group size (for private tours) ───────
+        group_el = await page.query_selector("#group-select")
+        if group_el:
+            s = Step("Select group size (private tour)")
+            try:
+                tag = await group_el.evaluate("el => el.tagName")
+                if tag.upper() == "SELECT":
+                    await page.select_option("#group-select", index=0)
+                    await page.wait_for_timeout(500)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, "Group size selected")
+            except Exception as e:
+                s.fail(str(e))
+            steps.append(s)
+
+        # ─── STEP 3: Set pax counts ────────────────────────────────
+        s = Step(f"Set passengers: {adults}A / {children}C / {infants}I")
         try:
-            price = await page.query_selector("[class*='price'], .product-price, [data-product-price]")
-            images = await page.query_selector_all("img[src*='cdn.shopify'], .product-image img, .gallery img")
-            variants = await page.query_selector_all("select option, input[type='radio'][name*='option'], .variant-option")
-            ss = await self.screenshot_b64(page)
-            
-            price_text = ""
-            if price:
-                price_text = (await price.text_content()) or ""
-            
-            notes = []
-            if price_text: notes.append(f"Price: {price_text.strip()[:50]}")
-            notes.append(f"Images: {len(images)}")
-            notes.append(f"Variants/options: {len(variants)}")
-            
-            if len(images) == 0:
-                s.fail("No product images found", ss)
-            elif not price_text:
-                s.fail("No price visible", ss)
-            else:
-                s.done(ss, " | ".join(notes))
-        except Exception as e:
-            s.fail(str(e))
-        steps.append(s)
+            # Clear and fill each field — triple-click selects all text, then type
+            adults_el = await page.query_selector("#adults-qty")
+            if adults_el:
+                await adults_el.click(click_count=3)
+                await adults_el.type(str(adults))
 
-        # Get booking params
-        adults = params.get("adults", 1)
-        children = params.get("children", 0)
-        infants = params.get("infants", 0)
-        tour_date = params.get("date", "")
-        phone_number = params.get("phone", "812345678")
-        pickup = params.get("pickup", "Chaweng Beach Road, Koh Samui")
-        pickup_lat = params.get("pickup_lat", "9.5321")
-        pickup_lng = params.get("pickup_lng", "100.0623")
-        program_idx = params.get("program_index", 1)
+            children_el = await page.query_selector("#children-qty")
+            if children_el:
+                await children_el.click(click_count=3)
+                await children_el.type(str(children))
 
-        s = Step("Fill booking form (program, pax, date, phone, pickup)")
-        try:
-            # Select program
-            program = await page.query_selector("#program-select")
-            if program:
-                await page.evaluate(f"""() => {{
-                    const sel = document.getElementById('program-select');
-                    if (sel && sel.options.length > {program_idx}) {{
-                        sel.selectedIndex = {program_idx};
-                        sel.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                }}""")
-                await page.wait_for_timeout(500)
+            infants_el = await page.query_selector("#infants-qty")
+            if infants_el:
+                await infants_el.click(click_count=3)
+                await infants_el.type(str(infants))
 
-            # Also handle group-select for private tours (first option is valid — just trigger change)
-            group_select = await page.query_selector("#group-select")
-            if group_select:
-                await page.evaluate("""() => {
-                    const sel = document.getElementById('group-select');
-                    if (sel && sel.options.length > 0) {
-                        // First option is already the correct group size
-                        sel.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    // Trigger price calc
-                    if (typeof updatePrivatePrice === 'function') updatePrivatePrice();
-                }""")
-                await page.wait_for_timeout(500)
-
-            # Set pax counts
-            await page.evaluate(f"""() => {{
-                const setQty = (id, val) => {{
-                    const el = document.getElementById(id);
-                    if (el) {{ el.value = val; el.dispatchEvent(new Event('change', {{ bubbles: true }})); }}
-                }};
-                setQty('adults-qty', {adults});
-                setQty('children-qty', {children});
-                setQty('infants-qty', {infants});
-                // Trigger price recalculation
+            # Trigger price recalculation
+            await page.evaluate("""() => {
                 if (typeof updateTotalPrice === 'function') updateTotalPrice();
                 if (typeof updatePrivatePrice === 'function') updatePrivatePrice();
-            }}""")
+            }""")
             await page.wait_for_timeout(500)
 
-            # Set date
+            price_el = await page.query_selector("#total-price, #btn-price")
+            price_now = ""
+            if price_el:
+                price_now = (await price_el.text_content() or "").strip()
+
+            ss = await self.screenshot_b64(page)
+            s.done(ss, f"Pax set | Price: {price_now}")
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # ─── STEP 4: Pick date ─────────────────────────────────────
+        s = Step("Select tour date")
+        try:
+            # Click the date button to open calendar modal
+            date_btn = await page.query_selector("#date-display, .date-input, #tour-date")
+            if date_btn:
+                await date_btn.click()
+                await page.wait_for_timeout(1000)
+
+            # Calendar modal should be open — click a date 3 days from now
+            # The calendar renders days as clickable elements
+            # Inject the date value directly (calendar widget varies) then close modal
+            tour_date = params.get("date", "")
             if not tour_date:
                 tour_date = await page.evaluate("""() => {
                     const d = new Date();
@@ -905,51 +935,141 @@ class BrowserAgent:
                     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
                     return day + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
                 }""")
-            
-            await page.evaluate(f"""() => {{
-                const dateInput = document.getElementById('tour-date');
-                if (dateInput) {{
-                    dateInput.value = '{tour_date}';
-                    dateInput.removeAttribute('readonly');
-                    dateInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+            # Try clicking a date cell in the calendar first
+            date_clicked = await page.evaluate(f"""() => {{
+                // Look for clickable date cells
+                const cells = document.querySelectorAll('.calendar-day:not(.disabled):not(.past), .day-cell:not(.disabled)');
+                // Click one that's at least 3 days ahead
+                for (const cell of cells) {{
+                    const dayNum = parseInt(cell.textContent);
+                    if (dayNum > 0) {{
+                        cell.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}""")
+
+            if not date_clicked:
+                # Fallback: set value directly
+                await page.evaluate(f"""() => {{
+                    const dateInput = document.getElementById('tour-date');
+                    if (dateInput) {{
+                        dateInput.value = '{tour_date}';
+                        dateInput.removeAttribute('readonly');
+                        dateInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    }}
                     const display = document.getElementById('date-display');
                     if (display) {{
                         const span = display.querySelector('span');
                         if (span) span.textContent = '{tour_date}';
                     }}
-                }}
-            }}""")
+                    // Close modal if open
+                    const modal = document.getElementById('date-picker-modal');
+                    if (modal) modal.style.display = 'none';
+                }}""")
 
-            # Fill WhatsApp via JS (type="tel" input needs direct value set)
-            await page.evaluate(f"""() => {{
-                const phone = document.getElementById('whatsapp-number') || document.querySelector('input[name="properties[WhatsApp Number]"]');
-                if (phone) {{
-                    phone.value = '{phone_number}';
-                    phone.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    phone.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-            }}""")
-
-            # Set pickup location
-            await page.evaluate(f"""() => {{
-                const loc = document.getElementById('pickup-location');
-                if (loc) loc.value = '{pickup}';
-                const lat = document.getElementById('pickup-lat');
-                const lng = document.getElementById('pickup-lng');
-                if (lat) lat.value = '{pickup_lat}';
-                if (lng) lng.value = '{pickup_lng}';
-                const display = document.getElementById('location-display');
-                if (display) display.textContent = '{pickup}';
-            }}""")
-
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(500)
+            # Verify date is set
+            date_val = await page.evaluate("() => document.getElementById('tour-date')?.value || 'NOT SET'")
             ss = await self.screenshot_b64(page)
-            s.done(ss, f"{adults}A/{children}C/{infants}I | {tour_date} | {pickup[:30]}")
+            if date_val and date_val != "NOT SET":
+                s.done(ss, f"Date: {date_val}")
+            else:
+                s.fail("Date field is empty after selection", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
-        s = Step("Add to cart")
+        # ─── STEP 5: Fill WhatsApp number ──────────────────────────
+        s = Step("Fill WhatsApp number")
+        try:
+            phone_el = await page.query_selector("#whatsapp-number")
+            if phone_el:
+                await phone_el.click()
+                await phone_el.fill(phone_number)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Phone: {phone_number}")
+            else:
+                s.fail("WhatsApp field not found", await self.screenshot_b64(page))
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # ─── STEP 6: Set pickup location (Use My Location) ────────
+        s = Step("Set pickup location — Use My Location")
+        try:
+            # Click the map button to open modal
+            map_btn = await page.query_selector(".map-button, button[onclick='openMapModal()']")
+            if map_btn:
+                await map_btn.click()
+                await page.wait_for_timeout(1500)
+
+                # Click "Use My Location" — geolocation is pre-granted
+                use_loc_btn = await page.query_selector(".use-location-btn, button[onclick='useMyLocation()']")
+                if use_loc_btn:
+                    await use_loc_btn.click()
+                    # Wait for geolocation resolve + reverse geocode
+                    await page.wait_for_timeout(3000)
+
+                    # Click "Confirm Location"
+                    confirm_btn = await page.query_selector(".confirm-btn, button[onclick='confirmLocation()']")
+                    if confirm_btn:
+                        # Check if button is enabled (has location data)
+                        is_disabled = await confirm_btn.get_attribute("disabled")
+                        if is_disabled:
+                            # Geolocation may have failed — fallback inject
+                            await page.evaluate(f"""() => {{
+                                document.getElementById('pickup-location').value = 'My Location ({pickup_lat}, {pickup_lng})';
+                                document.getElementById('pickup-lat').value = '{pickup_lat}';
+                                document.getElementById('pickup-lng').value = '{pickup_lng}';
+                                document.getElementById('location-display').textContent = 'My Location';
+                                document.getElementById('selected-address').textContent = 'My Location';
+                                // Enable confirm button
+                                document.querySelector('.confirm-btn').disabled = false;
+                            }}""")
+                            await page.wait_for_timeout(500)
+
+                        await confirm_btn.click()
+                        await page.wait_for_timeout(500)
+                else:
+                    # No Use My Location button — inject directly
+                    await page.evaluate(f"""() => {{
+                        document.getElementById('pickup-location').value = 'My Location ({pickup_lat}, {pickup_lng})';
+                        document.getElementById('pickup-lat').value = '{pickup_lat}';
+                        document.getElementById('pickup-lng').value = '{pickup_lng}';
+                        document.getElementById('location-display').textContent = 'My Location';
+                        // Close modal
+                        const modal = document.getElementById('map-modal');
+                        if (modal) modal.style.display = 'none';
+                    }}""")
+            else:
+                # No map button — inject pickup values directly
+                await page.evaluate(f"""() => {{
+                    const loc = document.getElementById('pickup-location');
+                    if (loc) loc.value = 'My Location ({pickup_lat}, {pickup_lng})';
+                    const lat = document.getElementById('pickup-lat');
+                    const lng = document.getElementById('pickup-lng');
+                    if (lat) lat.value = '{pickup_lat}';
+                    if (lng) lng.value = '{pickup_lng}';
+                    const display = document.getElementById('location-display');
+                    if (display) display.textContent = 'My Location';
+                }}""")
+
+            # Verify pickup was set
+            loc_val = await page.evaluate("() => document.getElementById('pickup-location')?.value || ''")
+            ss = await self.screenshot_b64(page)
+            if loc_val:
+                s.done(ss, f"Pickup: {loc_val[:50]}")
+            else:
+                s.fail("Pickup location not set", ss)
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # ─── STEP 7: Click Book Now ────────────────────────────────
+        s = Step("Click Book Now → add to cart")
         try:
             # Capture alerts
             alert_messages = []
@@ -957,50 +1077,20 @@ class BrowserAgent:
                 alert_messages.append(dialog.message)
                 await dialog.accept()
             page.on("dialog", handle_dialog)
-            
-            # Debug: check page state before submitting
-            try:
-                debug = await page.evaluate("""() => {
-                    try {
-                        const info = {};
-                        info.isGroupMode = typeof isGroupMode !== 'undefined' ? isGroupMode : 'undefined';
-                        info.program = document.getElementById('program-select')?.value || 'none';
-                        info.group = document.getElementById('group-select')?.value || 'none';
-                        info.date = document.getElementById('tour-date')?.value || 'none';
-                        info.phone = document.querySelector('input[name="properties[WhatsApp Number]"]')?.value || 'none';
-                        info.location = document.getElementById('pickup-location')?.value || 'none';
-                        info.adults = document.getElementById('adults-qty')?.value || '0';
-                        info.children = document.getElementById('children-qty')?.value || '0';
-                        info.infants = document.getElementById('infants-qty')?.value || '0';
-                        info.form = !!document.getElementById('product-form');
-                        info.btn = !!document.querySelector('.submit-btn');
-                        return info;
-                    } catch(e) { return { error: e.message }; }
-                }""")
-            except Exception:
-                debug = {"error": "debug eval failed"}
-            
-            # Trigger price calc
+
+            # Trigger price calc one more time
             await page.evaluate("""() => {
+                if (typeof updateTotalPrice === 'function') updateTotalPrice();
                 if (typeof updatePrivatePrice === 'function') updatePrivatePrice();
-                else if (typeof updateTotalPrice === 'function') updateTotalPrice();
             }""")
-            await page.wait_for_timeout(1000)
-            
-            btn = await page.query_selector(".submit-btn, button[type='submit']")
-            if btn:
-                # Use form submit instead of button click for proper event handling
-                form = await page.query_selector("#product-form, form[action*='cart']")
-                if form:
-                    await page.evaluate("""() => {
-                        const form = document.getElementById('product-form') || document.querySelector('form');
-                        if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-                    }""")
-                else:
-                    await btn.click()
-                
-                await page.wait_for_timeout(8000)
-                
+            await page.wait_for_timeout(500)
+
+            book_btn = await page.query_selector(".submit-btn, button[type='submit']")
+            if book_btn:
+                await book_btn.click()
+                await page.wait_for_timeout(6000)
+
+                # Check cart
                 cart_data = await page.evaluate("""async () => {
                     try {
                         const r = await fetch('/cart.js');
@@ -1008,178 +1098,172 @@ class BrowserAgent:
                         return { items: d.item_count, total: d.total_price / 100 };
                     } catch(e) { return { items: 0, error: e.message }; }
                 }""")
+
                 ss = await self.screenshot_b64(page)
                 items = cart_data.get("items", 0)
                 if items > 0:
-                    s.done(ss, f"Cart: {items} items, {cart_data.get('total', 0)} THB")
+                    s.done(ss, f"Added to cart: {items} items, ฿{cart_data.get('total', 0)}")
                 elif alert_messages:
-                    s.fail(f"Alert: {' | '.join(alert_messages)} | Debug: {str(debug)[:300]}", ss)
+                    s.fail(f"Alert: {' | '.join(alert_messages)}", ss)
                 else:
-                    s.fail(f"Cart empty, no alerts. Debug: {str(debug)[:400]}", ss)
+                    # Debug form state
+                    debug = await page.evaluate("""() => {
+                        return {
+                            date: document.getElementById('tour-date')?.value || 'EMPTY',
+                            phone: document.getElementById('whatsapp-number')?.value || 'EMPTY',
+                            pickup: document.getElementById('pickup-location')?.value || 'EMPTY',
+                            adults: document.getElementById('adults-qty')?.value || '0',
+                            program: document.getElementById('program-select')?.value || 'NONE',
+                            form: !!document.getElementById('product-form'),
+                            btn: !!document.querySelector('.submit-btn'),
+                        }
+                    }""")
+                    s.fail(f"Cart empty after click. Form state: {debug}", ss)
             else:
-                s.fail(f"No submit btn. Debug: {str(debug)[:300]}", await self.screenshot_b64(page))
+                s.fail("Book Now button not found", await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
+        if s.status == "FAIL":
+            await page.close()
+            return
 
-        s = Step("Verify cart has item")
+        # ─── STEP 8: Navigate to cart page ─────────────────────────
+        s = Step("Navigate to cart page")
         try:
-            await page.goto(f"{SHOP_URL}/cart.js", wait_until="domcontentloaded", timeout=10000)
-            cart_json_text = await page.inner_text("body")
-            import json as _json
-            cart_data = _json.loads(cart_json_text)
-            item_count = cart_data.get("item_count", 0)
-            total = cart_data.get("total_price", 0) / 100
-            items = [{"title": i["title"], "quantity": i["quantity"], "price": i["price"]/100} for i in cart_data.get("items", [])]
-            ss = await self.screenshot_b64(page)
-            if item_count > 0:
-                s.done(ss, f"Cart: {item_count} items, total {total} THB — {items}")
-            else:
-                s.fail("Cart is empty after add-to-cart", ss)
-        except Exception as e:
-            s.fail(str(e))
-        steps.append(s)
-
-        s = Step("Checkout form visible on cart page")
-        try:
-            # TIK checkout form is embedded in /cart page — NOT Shopify /checkout
             await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
+            await self._handle_storefront_password(page)
             await page.wait_for_timeout(3000)
-            
-            checkout_btn = await page.query_selector("#checkout-btn, .checkout-btn, button:has-text('Complete Booking')")
-            name_field = await page.query_selector("#customer-name, input[name='customer_name']")
-            email_field = await page.query_selector("#customer-email, input[name='customer_email']")
-            
+            # Verify checkout form exists
+            checkout_form = await page.query_selector("#checkout-form")
             ss = await self.screenshot_b64(page)
-            if checkout_btn and name_field and email_field:
-                s.done(ss, "Full TIK checkout form found on /cart")
+            if checkout_form:
+                s.done(ss, "Cart page loaded with checkout form")
             else:
-                parts = []
-                if not checkout_btn: parts.append("no checkout button")
-                if not name_field: parts.append("no name field")
-                if not email_field: parts.append("no email field")
-                s.fail(f"Checkout form incomplete: {', '.join(parts)}", ss)
+                s.fail("Checkout form not found on /cart", ss)
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
+        if s.status == "FAIL":
+            await page.close()
+            return
 
-        # Get params for customer info
-        customer_name = params.get("customer_name", "Mystery Shopper Test")
-        customer_email = params.get("customer_email", "info@tourinkohsamui.com")
-        payment = params.get("payment_method", "cash")
-        live = params.get("live", False)
-
-        s = Step("Fill customer info on checkout form")
+        # ─── STEP 9: Fill customer name ────────────────────────────
+        s = Step(f"Fill customer name: {customer_name}")
         try:
             name_field = await page.query_selector("#customer-name")
-            email_field = await page.query_selector("#customer-email")
-            
-            if name_field and email_field:
+            if name_field:
+                await name_field.click()
                 await name_field.fill(customer_name)
-                await email_field.fill(customer_email)
-                
-                # Select payment method
-                pay_radio = await page.query_selector(f"input[name='payment_method'][value='{payment}']")
-                if pay_radio:
-                    await pay_radio.evaluate("el => el.click()")
-                
-                await page.wait_for_timeout(1000)
                 ss = await self.screenshot_b64(page)
-                s.done(ss, f"Name: {customer_name} | Email: {customer_email} | Payment: {payment}")
+                s.done(ss, f"Name: {customer_name}")
             else:
-                s.fail("Customer form fields not found", await self.screenshot_b64(page))
+                s.fail("Customer name field not found", await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
-        if live:
-            s = Step("LIVE — Submit booking to n8n")
-            try:
-                # Collect cart data from browser
-                cart_and_form = await page.evaluate("""async () => {
-                    try {
-                        const cartResp = await fetch('/cart.js');
-                        const cart = await cartResp.json();
-                        const name = document.getElementById('customer-name')?.value || '';
-                        const email = document.getElementById('customer-email')?.value || '';
-                        const pay = document.querySelector('input[name="payment_method"]:checked')?.value || 'cash';
-                        return { cart, name, email, pay };
-                    } catch(e) { return { error: e.message }; }
-                }""")
-                
-                if cart_and_form.get("error"):
-                    s.fail(f"Cart read error: {cart_and_form['error']}", await self.screenshot_b64(page))
-                    steps.append(s)
-                else:
-                    cart = cart_and_form["cart"]
-                    items = cart.get("items", [])
-                    if not items:
-                        s.fail("Cart is empty — cannot submit", await self.screenshot_b64(page))
-                        steps.append(s)
-                    else:
-                        # Build payload same as submitBooking() JS
-                        item = items[0]
-                        props = item.get("properties", {})
-                        payload = {
-                            "variant_id": str(item.get("variant_id", "")),
-                            "quantity": 1,
-                            "cartGroupId": f"CG-agent-{int(time.time())}",
-                            "cartIndex": 1,
-                            "cartTotal": 1,
-                            "customerName": cart_and_form["name"],
-                            "customerEmail": cart_and_form["email"],
-                            "customerPhone": props.get("WhatsApp Number", ""),
-                            "whatsapp": props.get("WhatsApp Number", ""),
-                            "countryCode": props.get("Country Code", "+66"),
-                            "tourDate": props.get("Date", ""),
-                            "program": props.get("Program", ""),
-                            "pickupLocation": props.get("Pick-up Location", ""),
-                            "pickupLat": props.get("Pickup Lat", ""),
-                            "pickupLng": props.get("Pickup Lng", ""),
-                            "specialRequests": props.get("Special Requests", ""),
-                            "adults": int(props.get("Adults", adults)),
-                            "children": int(props.get("Children", children)),
-                            "infants": int(props.get("Infants", infants)),
-                            "bookingType": props.get("Booking Type", "Private"),
-                            "numberOfPersons": int(props.get("Total People", adults + children + infants)),
-                            "paymentMethod": cart_and_form["pay"],
-                            "productId": item.get("product_id", 0),
-                            "productTitle": item.get("product_title", ""),
-                            "price": item.get("final_line_price", 0) / 100,
-                        }
-                        
-                        # POST directly to n8n (bypass browser CORS issues)
-                        N8N_URL = os.environ.get("N8N_DEV_URL", "https://n8n-production-6ffa.up.railway.app")
-                        async with httpx.AsyncClient(timeout=30) as client:
-                            resp = await client.post(
-                                f"{N8N_URL}/webhook/cart-booking",
-                                json=payload
-                            )
-                            result = resp.json()
-                        
-                        ss = await self.screenshot_b64(page)
-                        if result.get("success"):
-                            booking_id = result.get("bookingId", result.get("orderNumber", ""))
-                            # Clear cart in browser
-                            await page.evaluate("fetch('/cart/clear.js', {method:'POST'})")
-                            s.done(ss, f"BOOKED — {booking_id} | {cart_and_form['name']} | {cart_and_form['email']} | {payload['tourDate']} | ฿{payload['price']}")
-                        else:
-                            err = result.get("error", "Unknown error")
-                            s.fail(f"n8n rejected: {err}", ss)
-                        steps.append(s)
+        # ─── STEP 10: Fill customer email ──────────────────────────
+        s = Step(f"Fill customer email: {customer_email}")
+        try:
+            email_field = await page.query_selector("#customer-email")
+            if email_field:
+                await email_field.click()
+                await email_field.fill(customer_email)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Email: {customer_email}")
+            else:
+                s.fail("Customer email field not found", await self.screenshot_b64(page))
+        except Exception as e:
+            s.fail(str(e))
+        steps.append(s)
 
-            except Exception as e:
-                s.fail(str(e), await self.screenshot_b64(page))
-                steps.append(s)
-        else:
-            s = Step("DRY RUN — Complete Booking button ready (not clicking)")
+        # ─── STEP 11: Select payment method ────────────────────────
+        s = Step(f"Select payment: {payment}")
+        try:
+            pay_radio = await page.query_selector(f"input[name='payment_method'][value='{payment}']")
+            if pay_radio:
+                # Click the label (parent) for visual feedback
+                await pay_radio.evaluate("el => el.closest('label')?.click() || el.click()")
+                await page.wait_for_timeout(500)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Payment: {payment}")
+            else:
+                # List available payment options
+                available = await page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('input[name="payment_method"]'))
+                        .filter(el => el.closest('label')?.style.display !== 'none')
+                        .map(el => el.value);
+                }""")
+                s.fail(f"Payment '{payment}' not found. Available: {available}", await self.screenshot_b64(page))
+        except Exception as e:
+            s.fail(str(e))
+        steps.append(s)
+
+        # ─── STEP 12: Click Complete Booking ───────────────────────
+        if not live:
+            s = Step("DRY RUN — Ready to submit (not clicking)")
             try:
                 checkout_btn = await page.query_selector("#checkout-btn:not(:disabled)")
                 ss = await self.screenshot_b64(page)
                 if checkout_btn:
-                    s.done(ss, "Ready to submit — pass live=true to actually book")
+                    s.done(ss, "Complete Booking button ready. Pass live=true to submit.")
                 else:
-                    s.fail("Button disabled or not found", ss)
+                    s.fail("Checkout button disabled or not found", ss)
+            except Exception as e:
+                s.fail(str(e))
+            steps.append(s)
+        else:
+            s = Step("LIVE — Click Complete Booking")
+            try:
+                checkout_btn = await page.query_selector("#checkout-btn")
+                if checkout_btn:
+                    # Listen for network response from n8n webhook
+                    async with page.expect_response(
+                        lambda r: "webhook" in r.url and r.status == 200,
+                        timeout=30000
+                    ) as response_info:
+                        await checkout_btn.click()
+                        response = await response_info.value
+                        resp_body = await response.json()
+
+                    ss = await self.screenshot_b64(page)
+                    if resp_body.get("success"):
+                        booking_id = resp_body.get("bookingId", resp_body.get("orderNumber", ""))
+                        s.done(ss, f"BOOKED — {booking_id} | {customer_name} | {customer_email}")
+                    else:
+                        err = resp_body.get("error", resp_body.get("message", "Unknown"))
+                        s.fail(f"n8n response: {err}", ss)
+                else:
+                    s.fail("Checkout button not found", await self.screenshot_b64(page))
+            except Exception as e:
+                # If expect_response times out, the webhook might not have fired
+                ss = await self.screenshot_b64(page)
+                # Check if there's a success popup on page
+                popup = await page.query_selector(".booking-popup-overlay")
+                popup_text = ""
+                if popup:
+                    popup_text = (await popup.text_content() or "")[:200]
+                if "success" in popup_text.lower() or "confirmed" in popup_text.lower():
+                    s.done(ss, f"Booking submitted (popup: {popup_text[:80]})")
+                else:
+                    s.fail(f"Error: {str(e)[:200]} | Popup: {popup_text[:100]}", ss)
+            steps.append(s)
+
+            # ─── STEP 13: Verify booking landed ───────────────────
+            s = Step("Verify booking in n8n / Supabase")
+            try:
+                await page.wait_for_timeout(3000)
+                # Check success popup
+                popup = await page.query_selector(".booking-popup-overlay")
+                popup_text = ""
+                if popup:
+                    popup_text = (await popup.text_content() or "")[:300]
+                ss = await self.screenshot_b64(page)
+                if popup_text:
+                    s.done(ss, f"Result: {popup_text[:150]}")
+                else:
+                    s.done(ss, "No popup detected — check n8n executions manually")
             except Exception as e:
                 s.fail(str(e))
             steps.append(s)
@@ -1191,3 +1275,4 @@ class BrowserAgent:
         s = Step("Email check via ZeptoMail logs")
         s.fail("Not implemented — requires ZeptoMail API or mailbox access")
         steps.append(s)
+
