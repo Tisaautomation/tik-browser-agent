@@ -499,7 +499,7 @@ class BrowserAgent:
         try:
             await page.goto(FINANCE_URL, wait_until="domcontentloaded", timeout=30000)
             await page.fill("input[type='email']", "will@tourinkohsamui.com")
-            await page.fill("input[type='password']", os.environ.get("WILL_PASSWORD", "TourAdmin2026!"))
+            await page.fill("input[type='password']", os.environ.get("WILL_PASSWORD", ""))
             await page.click("button[type='submit']")
             await page.wait_for_timeout(3000)
             s.done(await self.screenshot_b64(page))
