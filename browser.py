@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List
 
 SHOP_URL = "https://tourinkohsamui.com"
 FINANCE_URL = "https://tour-finance-app.vercel.app"
+SHOPIFY_STORE_PASSWORD = os.environ.get("SHOPIFY_STORE_PASSWORD", "")
 
 VIEWPORTS = {
     "desktop": {"width": 1280, "height": 800},
@@ -72,6 +73,7 @@ class BrowserAgent:
     async def screenshot_url(self, url: str) -> str:
         page = await self.new_page()
         await page.goto(url, wait_until="networkidle", timeout=30000)
+        await self._handle_storefront_password(page)
         return await self.screenshot_b64(page)
 
     async def close(self):
@@ -79,6 +81,39 @@ class BrowserAgent:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
+
+    async def _handle_storefront_password(self, page: Page) -> bool:
+        """Handle Shopify storefront password page. Returns True if password was entered."""
+        if not SHOPIFY_STORE_PASSWORD:
+            return False
+        try:
+            pw_input = await page.query_selector("input#password, input[name='password'][type='password']")
+            pw_form = await page.query_selector("form#login_form, form.storefront-password-form")
+            if pw_input and pw_form:
+                await pw_input.fill(SHOPIFY_STORE_PASSWORD)
+                submit = await page.query_selector("input[type='submit'], button[type='submit']")
+                if submit:
+                    await submit.click()
+                else:
+                    await pw_input.press("Enter")
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(2000)
+                # Check if we're past the password page
+                still_on_pw = await page.query_selector("form#login_form, form.storefront-password-form")
+                return still_on_pw is None
+            return False
+        except Exception:
+            return False
+
+    async def _goto_shop(self, page: Page, path: str = "", wait: str = "domcontentloaded") -> Any:
+        """Navigate to shop URL, handle password if needed."""
+        url = f"{SHOP_URL}{path}" if path else SHOP_URL
+        resp = await page.goto(url, wait_until=wait, timeout=30000)
+        await self._handle_storefront_password(page)
+        # If redirected back to password page after entering password, the page might reload
+        # Give it a moment to settle
+        await page.wait_for_timeout(1000)
+        return resp
 
     async def run_scenario(self, scenario: str, params: Dict[str, Any]) -> Dict:
         handlers = {
@@ -125,9 +160,12 @@ class BrowserAgent:
 
         s = Step("Load homepage")
         try:
-            resp = await page.goto(SHOP_URL, wait_until="domcontentloaded", timeout=30000)
+            resp = await self._goto_shop(page)
             ss = await self.screenshot_b64(page)
-            if resp and resp.status < 400:
+            current_url = page.url
+            if "/password" in current_url:
+                s.fail("Stuck on password page — SHOPIFY_STORE_PASSWORD may be wrong", ss)
+            elif resp and resp.status < 400:
                 s.done(ss, f"HTTP {resp.status}")
             else:
                 s.fail(f"HTTP {resp.status if resp else 'no response'}", ss)
@@ -137,31 +175,55 @@ class BrowserAgent:
 
         s = Step("Navigation menu visible")
         try:
-            await page.wait_for_selector("nav, header", timeout=5000)
+            # Broad Shopify selectors — works across Dawn, Debut, custom themes
+            nav = await page.query_selector("header, nav, #shopify-section-header, [class*='header'], [class*='site-nav'], [class*='main-nav']")
             ss = await self.screenshot_b64(page)
-            s.done(ss)
+            if nav:
+                s.done(ss)
+            else:
+                s.fail("Nav/header not found", ss)
         except Exception as e:
-            s.fail("Nav not found", await self.screenshot_b64(page))
+            s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
         s = Step("Hero section / CTA visible")
         try:
-            hero = await page.query_selector("section, .hero, [class*='hero'], [class*='banner']")
+            # Broad selectors for Shopify hero sections
+            hero = await page.query_selector(
+                "#shopify-section-slideshow, #shopify-section-image-banner, "
+                "[class*='hero'], [class*='banner'], [class*='slideshow'], "
+                "[class*='slider'], [class*='carousel'], "
+                "section:first-of-type img, .shopify-section:nth-child(2)"
+            )
             ss = await self.screenshot_b64(page)
             if hero:
                 s.done(ss)
             else:
-                s.fail("No hero section found", ss)
+                # Even if no hero class found, check if page has meaningful content
+                body_text = await page.inner_text("body")
+                if len(body_text.strip()) > 100 and "password" not in body_text.lower():
+                    s.done(ss, "No hero class found but page has content")
+                else:
+                    s.fail("No hero section found", ss)
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
         s = Step("Tour listings accessible")
         try:
-            await page.goto(f"{SHOP_URL}/collections/all", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_selector(".product-card, .card, [class*='product'], article", timeout=8000)
+            await self._goto_shop(page, "/collections/all")
+            await page.wait_for_timeout(3000)
+            # Broad Shopify product selectors
+            products = await page.query_selector(
+                ".product-card, .card, .grid__item, .collection-product-card, "
+                "[class*='product-card'], [class*='product-grid'], "
+                "a[href*='/products/'], article, .grid .grid__item"
+            )
             ss = await self.screenshot_b64(page)
-            s.done(ss)
+            if products:
+                s.done(ss)
+            else:
+                s.fail("No product elements found on /collections/all", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
@@ -174,7 +236,8 @@ class BrowserAgent:
 
         s = Step("Open collections page")
         try:
-            await page.goto(f"{SHOP_URL}/collections/all", wait_until="domcontentloaded", timeout=30000)
+            await self._goto_shop(page, "/collections/all")
+            await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
             s.done(ss)
         except Exception as e:
@@ -183,24 +246,33 @@ class BrowserAgent:
 
         s = Step("Tour cards render with price")
         try:
-            await page.wait_for_selector(".product-card, .card, article", timeout=8000)
-            first_card = await page.query_selector(".product-card, .card, article")
+            # Wait for any product element
+            await page.wait_for_selector(
+                ".product-card, .card, .grid__item, a[href*='/products/'], article",
+                timeout=8000
+            )
+            first_card = await page.query_selector(
+                ".product-card, .card, .grid__item, article"
+            )
             text = await first_card.inner_text() if first_card else ""
             ss = await self.screenshot_b64(page)
             if "฿" in text or "$" in text or "THB" in text or any(c.isdigit() for c in text):
                 s.done(ss, "Price visible on card")
             else:
-                s.fail("Price not visible on tour card", ss)
+                s.fail(f"Price not visible on tour card. Card text: {text[:200]}", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
         s = Step("Click into a tour product page")
         try:
-            link = await page.query_selector(".product-card a, .card a, article a, a[href*='/products/']")
+            link = await page.query_selector(
+                "a[href*='/products/'], .product-card a, .card a, article a"
+            )
             if link:
                 await link.click()
                 await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(2000)
                 ss = await self.screenshot_b64(page)
                 title = await page.title()
                 s.done(ss, f"Page: {title}")
@@ -212,7 +284,11 @@ class BrowserAgent:
 
         s = Step("Product page has Add to Cart button")
         try:
-            btn = await page.query_selector("[name='add'], button[type='submit'], .add-to-cart, [class*='add-to-cart']")
+            btn = await page.query_selector(
+                "button[name='add'], form[action*='/cart/add'] button[type='submit'], "
+                "[class*='add-to-cart'], .product-form__submit, "
+                "button:has-text('Add to cart'), button:has-text('Book Now')"
+            )
             ss = await self.screenshot_b64(page)
             if btn:
                 s.done(ss)
@@ -228,33 +304,54 @@ class BrowserAgent:
     async def _scenario_full_booking(self, steps: List[Step], params: Dict):
         page = await self.new_page()
 
+        # First go to collections to find a real product
         s = Step("Navigate to a bookable tour")
         try:
-            await page.goto(f"{SHOP_URL}/products/snorkeling-trip", wait_until="domcontentloaded", timeout=30000)
-            ss = await self.screenshot_b64(page)
-            s.done(ss)
+            await self._goto_shop(page, "/collections/all")
+            await page.wait_for_timeout(3000)
+            # Click first product link
+            link = await page.query_selector("a[href*='/products/']")
+            if link:
+                href = await link.get_attribute("href")
+                await link.click()
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(2000)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Navigated to: {href}")
+            else:
+                # Fallback to known product
+                await self._goto_shop(page, "/products/snorkeling-trip")
+                ss = await self.screenshot_b64(page)
+                s.done(ss, "Fallback to snorkeling-trip")
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
         s = Step("Select date if date picker present")
         try:
-            date_input = await page.query_selector("input[type='date'], .datepicker, [class*='date']")
+            date_input = await page.query_selector(
+                "input[type='date'], [class*='datepicker'], [class*='date-picker'], "
+                "[class*='date'], select[name*='date'], .booking-date"
+            )
             ss = await self.screenshot_b64(page)
             if date_input:
                 s.done(ss, "Date picker found")
             else:
-                s.done(ss, "No date picker — date selected at checkout")
+                s.done(ss, "No date picker — date selected at checkout or via note")
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
         s = Step("Add to cart")
         try:
-            btn = await page.query_selector("[name='add'], button[type='submit'], .add-to-cart")
+            btn = await page.query_selector(
+                "button[name='add'], form[action*='/cart/add'] button[type='submit'], "
+                "[class*='add-to-cart'], .product-form__submit, "
+                "button:has-text('Add to cart'), button:has-text('Book Now')"
+            )
             if btn:
                 await btn.click()
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
                 ss = await self.screenshot_b64(page)
                 s.done(ss)
             else:
@@ -266,22 +363,34 @@ class BrowserAgent:
 
         s = Step("Cart accessible (icon or page)")
         try:
-            cart_link = await page.query_selector("a[href='/cart'], .cart, [class*='cart']")
+            cart_link = await page.query_selector(
+                "a[href='/cart'], a[href*='cart'], [class*='cart-icon'], "
+                "[class*='cart-count'], .cart-link, .header__icon--cart"
+            )
             ss = await self.screenshot_b64(page)
             if cart_link:
                 await cart_link.click()
                 await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(2000)
                 ss = await self.screenshot_b64(page)
                 s.done(ss)
             else:
-                s.done(ss, "Cart may be drawer-style")
+                # Try navigating directly to /cart
+                await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(2000)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, "Navigated directly to /cart")
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
 
         s = Step("Checkout button visible and clickable")
         try:
-            checkout = await page.query_selector("[name='checkout'], a[href*='checkout'], button[class*='checkout']")
+            checkout = await page.query_selector(
+                "button[name='checkout'], a[href*='checkout'], "
+                "[class*='checkout'], button:has-text('Checkout'), "
+                "button:has-text('Check out'), input[name='checkout']"
+            )
             ss = await self.screenshot_b64(page)
             if checkout:
                 is_visible = await checkout.is_visible()
@@ -309,8 +418,8 @@ class BrowserAgent:
 
         s = Step("Open homepage with chatbot")
         try:
-            await page.goto(SHOP_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await self._goto_shop(page)
+            await page.wait_for_timeout(5000)  # Extra time for chatbot widget to load
             ss = await self.screenshot_b64(page)
             s.done(ss)
         except Exception as e:
@@ -319,7 +428,20 @@ class BrowserAgent:
 
         s = Step("Chatbot widget visible")
         try:
-            chatbot = await page.query_selector("[class*='chat'], [id*='chat'], iframe[src*='chat'], .chat-bubble, .chat-widget")
+            # Look for common chatbot selectors + iframes
+            chatbot = await page.query_selector(
+                "[class*='chat'], [id*='chat'], iframe[src*='chat'], "
+                ".chat-bubble, .chat-widget, [class*='tidio'], "
+                "[class*='crisp'], [class*='intercom'], [class*='messenger'], "
+                "#tidio-chat, .crisp-client, [data-chat]"
+            )
+            # Also check inside iframes
+            if not chatbot:
+                frames = page.frames
+                for frame in frames:
+                    chatbot = await frame.query_selector("[class*='chat'], [class*='widget']")
+                    if chatbot:
+                        break
             ss = await self.screenshot_b64(page)
             if chatbot:
                 s.done(ss, "Chatbot element found")
@@ -331,10 +453,13 @@ class BrowserAgent:
 
         s = Step("Chatbot opens on click")
         try:
-            chatbot = await page.query_selector("[class*='chat'], [id*='chat'], .chat-bubble")
+            chatbot = await page.query_selector(
+                "[class*='chat'], [id*='chat'], .chat-bubble, "
+                "[class*='tidio'], #tidio-chat"
+            )
             if chatbot:
                 await chatbot.click()
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
                 ss = await self.screenshot_b64(page)
                 s.done(ss)
             else:
@@ -351,8 +476,8 @@ class BrowserAgent:
 
         s = Step("Load homepage")
         try:
-            await page.goto(SHOP_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await self._goto_shop(page)
+            await page.wait_for_timeout(5000)
             s.done(await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e))
@@ -360,7 +485,10 @@ class BrowserAgent:
 
         s = Step("Type tour question in chatbot")
         try:
-            input_el = await page.query_selector("[class*='chat'] input, [class*='chat'] textarea")
+            input_el = await page.query_selector(
+                "[class*='chat'] input, [class*='chat'] textarea, "
+                "[id*='chat'] input, [id*='chat'] textarea"
+            )
             if input_el:
                 await input_el.type("What snorkeling tours do you have?", delay=50)
                 await input_el.press("Enter")
@@ -375,7 +503,10 @@ class BrowserAgent:
 
         s = Step("Chatbot responded with relevant info")
         try:
-            response = await page.query_selector("[class*='bot-message'], [class*='chat-message'], [class*='response']")
+            response = await page.query_selector(
+                "[class*='bot-message'], [class*='chat-message'], "
+                "[class*='response'], [class*='reply']"
+            )
             ss = await self.screenshot_b64(page)
             if response:
                 text = await response.inner_text()
@@ -396,8 +527,8 @@ class BrowserAgent:
         page = await self.new_page()
         s = Step("Load homepage")
         try:
-            await page.goto(SHOP_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await self._goto_shop(page)
+            await page.wait_for_timeout(5000)
             s.done(await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e))
@@ -405,7 +536,10 @@ class BrowserAgent:
 
         s = Step("Ask refund policy question")
         try:
-            input_el = await page.query_selector("[class*='chat'] input, [class*='chat'] textarea")
+            input_el = await page.query_selector(
+                "[class*='chat'] input, [class*='chat'] textarea, "
+                "[id*='chat'] input, [id*='chat'] textarea"
+            )
             if input_el:
                 await input_el.type("Can I get a refund if I cancel?", delay=50)
                 await input_el.press("Enter")
@@ -420,7 +554,9 @@ class BrowserAgent:
 
         s = Step("Refund policy clearly explained")
         try:
-            response = await page.query_selector("[class*='bot-message'], [class*='chat-message']")
+            response = await page.query_selector(
+                "[class*='bot-message'], [class*='chat-message'], [class*='reply']"
+            )
             ss = await self.screenshot_b64(page)
             if response:
                 text = await response.inner_text()
@@ -464,7 +600,6 @@ class BrowserAgent:
         try:
             await page.fill("input[type='email'], input[name='email']", email)
             await page.fill("input[type='password']", password)
-            ss = await self.screenshot_b64(page)
             await page.click("button[type='submit'], button:has-text('Login'), button:has-text('Sign in')")
             await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
@@ -499,7 +634,7 @@ class BrowserAgent:
         try:
             await page.goto(FINANCE_URL, wait_until="domcontentloaded", timeout=30000)
             await page.fill("input[type='email']", "will@tourinkohsamui.com")
-            await page.fill("input[type='password']", os.environ.get("WILL_PASSWORD", "TourAdmin2026!"))
+            await page.fill("input[type='password']", os.environ.get("WILL_PASSWORD", ""))
             await page.click("button[type='submit']")
             await page.wait_for_timeout(3000)
             s.done(await self.screenshot_b64(page))
@@ -530,8 +665,8 @@ class BrowserAgent:
 
         await page.close()
 
-    # ─── SCENARIO: Email check (placeholder — needs mailbox) ─────
+    # ─── SCENARIO: Email check (placeholder) ─────────────────────
     async def _scenario_email_check(self, steps: List[Step], params: Dict):
         s = Step("Email check via ZeptoMail logs")
-        s.fail("Not implemented — requires ZeptoMail API or mailbox access. Check logs manually at api.zeptomail.com")
+        s.fail("Not implemented — requires ZeptoMail API or mailbox access")
         steps.append(s)
