@@ -15,6 +15,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
 COPY . .
-RUN chmod +x start.sh
 
-CMD ["/bin/sh", "start.sh"]
+CMD ["python", "main.py"]
