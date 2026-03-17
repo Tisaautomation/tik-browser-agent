@@ -211,19 +211,19 @@ class BrowserAgent:
 
         s = Step("Tour listings accessible")
         try:
-            await self._goto_shop(page, "/collections/all")
+            await self._goto_shop(page, "/pages/all-tours")
             await page.wait_for_timeout(3000)
             # Broad Shopify product selectors
             products = await page.query_selector(
-                ".product-card, .card, .grid__item, .collection-product-card, "
-                "[class*='product-card'], [class*='product-grid'], "
-                "a[href*='/products/'], article, .grid .grid__item"
+                ".tour-card, .tour-card__link, .product-card, "
+                "[class*='tour-card'], [class*='tours-grid'], "
+                "a[href*='/products/'], article, .tours-grid .tour-card"
             )
             ss = await self.screenshot_b64(page)
             if products:
                 s.done(ss)
             else:
-                s.fail("No product elements found on /collections/all", ss)
+                s.fail("No tour cards found on /pages/all-tours", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
@@ -236,7 +236,7 @@ class BrowserAgent:
 
         s = Step("Open collections page")
         try:
-            await self._goto_shop(page, "/collections/all")
+            await self._goto_shop(page, "/pages/all-tours")
             await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
             s.done(ss)
@@ -248,11 +248,11 @@ class BrowserAgent:
         try:
             # Wait for any product element
             await page.wait_for_selector(
-                ".product-card, .card, .grid__item, a[href*='/products/'], article",
+                ".tour-card, .tour-card__link, a[href*='/products/'], article",
                 timeout=8000
             )
             first_card = await page.query_selector(
-                ".product-card, .card, .grid__item, article"
+                ".tour-card, .product-card, article"
             )
             text = await first_card.inner_text() if first_card else ""
             ss = await self.screenshot_b64(page)
@@ -267,7 +267,7 @@ class BrowserAgent:
         s = Step("Click into a tour product page")
         try:
             link = await page.query_selector(
-                "a[href*='/products/'], .product-card a, .card a, article a"
+                ".tour-card__link, a[href*='/products/'], .tour-card a"
             )
             if link:
                 await link.click()
@@ -307,7 +307,7 @@ class BrowserAgent:
         # First go to collections to find a real product
         s = Step("Navigate to a bookable tour")
         try:
-            await self._goto_shop(page, "/collections/all")
+            await self._goto_shop(page, "/pages/all-tours")
             await page.wait_for_timeout(3000)
             # Click first product link
             link = await page.query_selector("a[href*='/products/']")
