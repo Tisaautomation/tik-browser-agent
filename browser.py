@@ -919,10 +919,15 @@ class BrowserAgent:
                 }}
             }}""")
 
-            # Fill WhatsApp
-            phone_el = await page.query_selector("#whatsapp-number")
-            if phone_el:
-                await phone_el.fill(phone_number)
+            # Fill WhatsApp via JS (type="tel" input needs direct value set)
+            await page.evaluate(f"""() => {{
+                const phone = document.getElementById('whatsapp-number') || document.querySelector('input[name="properties[WhatsApp Number]"]');
+                if (phone) {{
+                    phone.value = '{phone_number}';
+                    phone.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    phone.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }}""")
 
             # Set pickup location
             await page.evaluate(f"""() => {{
