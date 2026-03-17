@@ -252,12 +252,17 @@ class BrowserAgent:
                 timeout=8000
             )
             # Try getting price from dedicated price element first
-            price_el = await page.query_selector(".tour-card__price-value, .tour-card__price, .price, [class*='price']")
+            price_el = await page.query_selector("[data-thb-price], .tour-card__price-value")
+            text = ""
             if price_el:
-                text = await price_el.inner_text()
-            else:
-                first_card = await page.query_selector(".tour-card, .product-card, article")
-                text = await first_card.inner_text() if first_card else ""
+                dp = await price_el.get_attribute("data-thb-price")
+                if dp:
+                    text = dp + " THB"
+                else:
+                    text = (await price_el.text_content()) or ""
+            if not text:
+                first_card = await page.query_selector(".tour-card, .product-card")
+                text = (await first_card.text_content()) if first_card else ""
             ss = await self.screenshot_b64(page)
             if "฿" in text or "$" in text or "THB" in text or any(ch.isdigit() for ch in text):
                 s.done(ss, f"Price visible: {text.strip()[:80]}")
@@ -390,9 +395,11 @@ class BrowserAgent:
         s = Step("Checkout button visible and clickable")
         try:
             checkout = await page.query_selector(
-                "button[name='checkout'], a[href*='checkout'], "
-                "[class*='checkout'], button:has-text('Checkout'), "
-                "button:has-text('Check out'), input[name='checkout']"
+                "button[name='checkout'], input[name='checkout'], "
+                "a[href*='checkout'], [class*='checkout'], "
+                "button:has-text('Checkout'), button:has-text('Check out'), "
+                "form[action='/cart'] button[type='submit'], "
+                "button:has-text('Book Now'), .cart__checkout-button"
             )
             ss = await self.screenshot_b64(page)
             if checkout:
