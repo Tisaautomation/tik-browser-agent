@@ -107,12 +107,14 @@ class BrowserAgent:
             return False
 
     async def _goto_shop(self, page: Page, path: str = "", wait: str = "domcontentloaded") -> Any:
-        """Navigate to shop URL, handle password if needed."""
+        """Navigate to shop URL, handle password if needed. Re-navigates after password entry."""
         url = f"{SHOP_URL}{path}" if path else SHOP_URL
         resp = await page.goto(url, wait_until=wait, timeout=30000)
-        await self._handle_storefront_password(page)
-        # If redirected back to password page after entering password, the page might reload
-        # Give it a moment to settle
+        entered_pw = await self._handle_storefront_password(page)
+        if entered_pw and path:
+            # After password, Shopify redirects to homepage — navigate to intended page
+            await page.wait_for_timeout(1000)
+            resp = await page.goto(url, wait_until=wait, timeout=30000)
         await page.wait_for_timeout(1000)
         return resp
 
