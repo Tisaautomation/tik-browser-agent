@@ -866,15 +866,17 @@ class BrowserAgent:
                 }}""")
                 await page.wait_for_timeout(500)
 
-            # Also handle group-select for private tours
+            # Also handle group-select for private tours (first option is valid — just trigger change)
             group_select = await page.query_selector("#group-select")
             if group_select:
                 await page.evaluate("""() => {
                     const sel = document.getElementById('group-select');
-                    if (sel && sel.options.length > 1) {
-                        sel.selectedIndex = 1;
+                    if (sel && sel.options.length > 0) {
+                        // First option is already the correct group size
                         sel.dispatchEvent(new Event('change', { bubbles: true }));
                     }
+                    // Trigger price calc
+                    if (typeof updatePrivatePrice === 'function') updatePrivatePrice();
                 }""")
                 await page.wait_for_timeout(500)
 
@@ -943,13 +945,25 @@ class BrowserAgent:
 
         s = Step("Add to cart")
         try:
+            # Capture any alert dialogs (validation errors)
+            alert_messages = []
+            page.on("dialog", lambda dialog: (alert_messages.append(dialog.message), dialog.accept()))
+            
+            # Trigger price recalc before submitting
+            await page.evaluate("""() => {
+                if (typeof updateTotalPrice === 'function') updateTotalPrice();
+                if (typeof updatePrivatePrice === 'function') updatePrivatePrice();
+            }""")
+            await page.wait_for_timeout(500)
+            
             btn = await page.query_selector(
                 ".submit-btn, button[type='submit'], "
                 "button:has-text('Book Now'), button:has-text('Add to cart')"
             )
             if btn:
                 await btn.click()
-                await page.wait_for_timeout(5000)
+                await page.wait_for_timeout(6000)
+                
                 cart_data = await page.evaluate("""async () => {
                     try {
                         const r = await fetch('/cart.js');
@@ -961,8 +975,11 @@ class BrowserAgent:
                 items = cart_data.get("items", 0)
                 if items > 0:
                     s.done(ss, f"Cart: {items} items, {cart_data.get('total', 0)} THB")
+                elif alert_messages:
+                    s.fail(f"Form validation alert: {' | '.join(alert_messages)}", ss)
                 else:
-                    s.fail("Cart empty after click — form validation may have blocked", ss)
+                    # Check console for JS errors
+                    s.fail("Cart empty — no alert fired, possible JS error", ss)
             else:
                 s.fail("Book Now button not found", await self.screenshot_b64(page))
         except Exception as e:
