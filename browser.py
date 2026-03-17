@@ -1094,7 +1094,7 @@ class BrowserAgent:
         if live:
             s = Step("LIVE — Submit booking to n8n")
             try:
-                import aiohttp
+                import httpx
                 # Collect cart data from browser
                 cart_and_form = await page.evaluate("""async () => {
                     try {
@@ -1150,13 +1150,12 @@ class BrowserAgent:
                         
                         # POST directly to n8n (bypass browser CORS issues)
                         N8N_URL = os.environ.get("N8N_DEV_URL", "https://n8n-production-6ffa.up.railway.app")
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            resp = await client.post(
                                 f"{N8N_URL}/webhook/cart-booking",
-                                json=payload,
-                                timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                result = await resp.json()
+                                json=payload
+                            )
+                            result = resp.json()
                         
                         ss = await self.screenshot_b64(page)
                         if result.get("success"):
