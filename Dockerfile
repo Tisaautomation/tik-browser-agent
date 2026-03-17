@@ -2,14 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install base deps for playwright
-RUN apt-get update && apt-get install -y     wget curl gnupg ca-certificates     --no-install-recommends && rm -rf /var/lib/apt/lists/*
+# Install base tools
+RUN apt-get update && apt-get install -y     wget curl gnupg ca-certificates     --no-install-recommends
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Let playwright install chromium AND its system deps automatically
+# Playwright install --with-deps needs apt access (do NOT clean apt lists before this)
 RUN playwright install --with-deps chromium
+
+# Now clean up
+RUN rm -rf /var/lib/apt/lists/*
 
 COPY . .
 
