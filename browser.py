@@ -395,9 +395,35 @@ class BrowserAgent:
 
         s = Step("Checkout form accessible on cart page")
         try:
-            # TIK uses a custom checkout form on /cart — NOT Shopify's /checkout
-            await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            # We should already be on /cart from previous step
+            # First verify cart has items via cart.js API
+            cart_check = await page.evaluate("""async () => {
+                try {
+                    const r = await fetch('/cart.js');
+                    const d = await r.json();
+                    return { items: d.item_count, total: d.total_price / 100 };
+                } catch(e) { return { items: 0, total: 0, error: e.message }; }
+            }""")
+            
+            if cart_check.get("items", 0) == 0:
+                # Cart empty — reload cart page to confirm
+                await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)
+                ss = await self.screenshot_b64(page)
+                s.fail(f"Cart is empty (0 items) — add-to-cart may have failed silently (date required?)", ss)
+                steps.append(s)
+                await page.close()
+                return
+            
+            # Cart has items — ensure we're on the cart page
+            current_url = page.url
+            if "/cart" not in current_url:
+                await page.goto(f"{SHOP_URL}/cart", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
+            else:
+                # Reload to get fresh render with items
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
             
             # Check for custom TIK checkout elements
             checkout_btn = await page.query_selector("#checkout-btn, .checkout-btn, button:has-text('Complete Booking')")
@@ -406,7 +432,7 @@ class BrowserAgent:
             payment_options = await page.query_selector_all("input[name='payment_method']")
             
             ss = await self.screenshot_b64(page)
-            notes = []
+            notes = [f"Cart: {cart_check['items']} items, {cart_check['total']} THB"]
             if checkout_btn: notes.append("Complete Booking btn")
             if name_field: notes.append("Name field")
             if email_field: notes.append("Email field")
@@ -414,14 +440,8 @@ class BrowserAgent:
             
             if checkout_btn and name_field and email_field:
                 s.done(ss, " | ".join(notes))
-            elif not checkout_btn and not name_field:
-                empty = await page.query_selector(".cart-empty")
-                if empty:
-                    s.fail("Cart is empty — checkout form not shown", ss)
-                else:
-                    s.fail(f"Custom checkout form not found. Found: {' | '.join(notes) or 'nothing'}", ss)
             else:
-                s.done(ss, f"Partial form: {' | '.join(notes)}")
+                s.fail(f"Checkout form incomplete: {' | '.join(notes)}", ss)
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
