@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List
 
 SHOP_URL = "https://tourinkohsamui.com"
 FINANCE_URL = "https://tour-finance-app.vercel.app"
-SHOPIFY_STORE_PASSWORD = os.environ.get("SHOPIFY_STORE_PASSWORD", "")
+SHOPIFY_STORE_PASSWORD = os.environ.get("SHOPIFY_STORE_PASSWORD", "bawhow")
 
 VIEWPORTS = {
     "desktop": {"width": 1280, "height": 800},
@@ -251,15 +251,18 @@ class BrowserAgent:
                 ".tour-card, .tour-card__link, a[href*='/products/'], article",
                 timeout=8000
             )
-            first_card = await page.query_selector(
-                ".tour-card, .product-card, article"
-            )
-            text = await first_card.inner_text() if first_card else ""
-            ss = await self.screenshot_b64(page)
-            if "฿" in text or "$" in text or "THB" in text or any(c.isdigit() for c in text):
-                s.done(ss, "Price visible on card")
+            # Try getting price from dedicated price element first
+            price_el = await page.query_selector(".tour-card__price-value, .tour-card__price, .price, [class*='price']")
+            if price_el:
+                text = await price_el.inner_text()
             else:
-                s.fail(f"Price not visible on tour card. Card text: {text[:200]}", ss)
+                first_card = await page.query_selector(".tour-card, .product-card, article")
+                text = await first_card.inner_text() if first_card else ""
+            ss = await self.screenshot_b64(page)
+            if "฿" in text or "$" in text or "THB" in text or any(ch.isdigit() for ch in text):
+                s.done(ss, f"Price visible: {text.strip()[:80]}")
+            else:
+                s.fail(f"Price not visible. Text found: {text[:200]}", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
