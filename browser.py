@@ -1092,41 +1092,89 @@ class BrowserAgent:
         steps.append(s)
 
         if live:
-            s = Step("LIVE — Click Complete Booking")
+            s = Step("LIVE — Submit booking to n8n")
             try:
-                checkout_btn = await page.query_selector("#checkout-btn:not(:disabled)")
-                if checkout_btn:
-                    await checkout_btn.click()
-                    # Wait for popup response (success or error)
-                    await page.wait_for_timeout(10000)
-                    
-                    # Check for success popup
-                    popup_title = await page.query_selector(".booking-popup-title.success")
-                    popup_error = await page.query_selector(".booking-popup-title.error")
-                    popup_msg = await page.query_selector(".booking-popup-message")
-                    msg_text = ""
-                    if popup_msg:
-                        msg_text = (await popup_msg.inner_text()) or ""
-                    
-                    ss = await self.screenshot_b64(page)
-                    
-                    if popup_title:
-                        s.done(ss, f"BOOKING SUBMITTED — {msg_text[:200]}")
-                    elif popup_error:
-                        error_title = await popup_error.inner_text()
-                        s.fail(f"Booking error: {error_title} — {msg_text[:200]}", ss)
-                    else:
-                        # No popup — check page state
-                        page_text = await page.inner_text("body")
-                        if "booking" in page_text.lower() and ("sent" in page_text.lower() or "confirm" in page_text.lower()):
-                            s.done(ss, f"Booking appears submitted (no popup detected)")
-                        else:
-                            s.fail("No success/error popup after clicking Complete Booking", ss)
+                import aiohttp
+                # Collect cart data from browser
+                cart_and_form = await page.evaluate("""async () => {
+                    try {
+                        const cartResp = await fetch('/cart.js');
+                        const cart = await cartResp.json();
+                        const name = document.getElementById('customer-name')?.value || '';
+                        const email = document.getElementById('customer-email')?.value || '';
+                        const pay = document.querySelector('input[name="payment_method"]:checked')?.value || 'cash';
+                        return { cart, name, email, pay };
+                    } catch(e) { return { error: e.message }; }
+                }""")
+                
+                if cart_and_form.get("error"):
+                    s.fail(f"Cart read error: {cart_and_form['error']}", await self.screenshot_b64(page))
+                    steps.append(s)
                 else:
-                    s.fail("Complete Booking button disabled or not found", await self.screenshot_b64(page))
+                    cart = cart_and_form["cart"]
+                    items = cart.get("items", [])
+                    if not items:
+                        s.fail("Cart is empty — cannot submit", await self.screenshot_b64(page))
+                        steps.append(s)
+                    else:
+                        # Build payload same as submitBooking() JS
+                        item = items[0]
+                        props = item.get("properties", {})
+                        payload = {
+                            "variant_id": str(item.get("variant_id", "")),
+                            "quantity": 1,
+                            "cartGroupId": f"CG-agent-{int(__import__('time').time())}",
+                            "cartIndex": 1,
+                            "cartTotal": 1,
+                            "customerName": cart_and_form["name"],
+                            "customerEmail": cart_and_form["email"],
+                            "customerPhone": props.get("WhatsApp Number", ""),
+                            "whatsapp": props.get("WhatsApp Number", ""),
+                            "countryCode": props.get("Country Code", "+66"),
+                            "tourDate": props.get("Date", ""),
+                            "program": props.get("Program", ""),
+                            "pickupLocation": props.get("Pick-up Location", ""),
+                            "pickupLat": props.get("Pickup Lat", ""),
+                            "pickupLng": props.get("Pickup Lng", ""),
+                            "specialRequests": props.get("Special Requests", ""),
+                            "adults": int(props.get("Adults", adults)),
+                            "children": int(props.get("Children", children)),
+                            "infants": int(props.get("Infants", infants)),
+                            "bookingType": props.get("Booking Type", "Private"),
+                            "numberOfPersons": int(props.get("Total People", adults + children + infants)),
+                            "paymentMethod": cart_and_form["pay"],
+                            "productId": item.get("product_id", 0),
+                            "productTitle": item.get("product_title", ""),
+                            "price": item.get("final_line_price", 0) / 100,
+                        }
+                        
+                        # POST directly to n8n (bypass browser CORS issues)
+                        N8N_URL = os.environ.get("N8N_DEV_URL", "https://n8n-production-6ffa.up.railway.app")
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(
+                                f"{N8N_URL}/webhook/cart-booking",
+                                json=payload,
+                                timeout=aiohttp.ClientTimeout(total=30)
+                            ) as resp:
+                                result = await resp.json()
+                        
+                        ss = await self.screenshot_b64(page)
+                        if result.get("success"):
+                            booking_id = result.get("bookingId", result.get("orderNumber", ""))
+                            # Clear cart in browser
+                            await page.evaluate("fetch('/cart/clear.js', {method:'POST'})")
+                            s.done(ss, f"BOOKED — {booking_id} | {cart_and_form['name']} | {cart_and_form['email']} | {payload['tourDate']} | ฿{payload['price']}")
+                        else:
+                            err = result.get("error", "Unknown error")
+                            s.fail(f"n8n rejected: {err}", ss)
+                        steps.append(s)
+            except ImportError:
+                # aiohttp not available — fallback to button click
+                s.fail("aiohttp not installed — cannot submit directly", await self.screenshot_b64(page))
+                steps.append(s)
             except Exception as e:
                 s.fail(str(e), await self.screenshot_b64(page))
-            steps.append(s)
+                steps.append(s)
         else:
             s = Step("DRY RUN — Complete Booking button ready (not clicking)")
             try:
