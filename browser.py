@@ -1,4 +1,5 @@
-import asyncio, base64, os
+import asyncio, base64, os, time
+import httpx
 from playwright.async_api import async_playwright, Page, Browser
 from typing import Dict, Any, Optional, List
 
@@ -1094,7 +1095,6 @@ class BrowserAgent:
         if live:
             s = Step("LIVE — Submit booking to n8n")
             try:
-                import httpx
                 # Collect cart data from browser
                 cart_and_form = await page.evaluate("""async () => {
                     try {
@@ -1123,7 +1123,7 @@ class BrowserAgent:
                         payload = {
                             "variant_id": str(item.get("variant_id", "")),
                             "quantity": 1,
-                            "cartGroupId": f"CG-agent-{int(__import__('time').time())}",
+                            "cartGroupId": f"CG-agent-{int(time.time())}",
                             "cartIndex": 1,
                             "cartTotal": 1,
                             "customerName": cart_and_form["name"],
@@ -1167,10 +1167,7 @@ class BrowserAgent:
                             err = result.get("error", "Unknown error")
                             s.fail(f"n8n rejected: {err}", ss)
                         steps.append(s)
-            except ImportError:
-                # aiohttp not available — fallback to button click
-                s.fail("aiohttp not installed — cannot submit directly", await self.screenshot_b64(page))
-                steps.append(s)
+
             except Exception as e:
                 s.fail(str(e), await self.screenshot_b64(page))
                 steps.append(s)
