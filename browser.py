@@ -336,36 +336,102 @@ class BrowserAgent:
             s.fail(str(e))
         steps.append(s)
 
-        s = Step("Select date if date picker present")
+        s = Step("Fill booking form (program, date, phone, pickup)")
         try:
-            date_input = await page.query_selector(
-                "input[type='date'], [class*='datepicker'], [class*='date-picker'], "
-                "[class*='date'], select[name*='date'], .booking-date"
-            )
+            # TIK product pages require: program, date, WhatsApp, pickup location
+            # Program is usually pre-selected, but verify
+            program = await page.query_selector("#program-select")
+            if program:
+                # Select first available option
+                await page.evaluate("""() => {
+                    const sel = document.getElementById('program-select');
+                    if (sel && sel.options.length > 1) {
+                        sel.selectedIndex = 1;
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }""")
+                await page.wait_for_timeout(500)
+
+            # Set date — readonly text input, must use JS
+            tomorrow = await page.evaluate("""() => {
+                const d = new Date();
+                d.setDate(d.getDate() + 3);
+                const day = String(d.getDate()).padStart(2, '0');
+                const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                const month = months[d.getMonth()];
+                const year = d.getFullYear();
+                const formatted = day + ' ' + month + ' ' + year;
+                const dateInput = document.getElementById('tour-date');
+                if (dateInput) {
+                    dateInput.value = formatted;
+                    dateInput.removeAttribute('readonly');
+                    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    // Update display
+                    const display = document.getElementById('date-display');
+                    if (display) display.querySelector('span').textContent = formatted;
+                    return formatted;
+                }
+                return null;
+            }""")
+
+            # Fill WhatsApp number
+            phone = await page.query_selector("#whatsapp-number")
+            if phone:
+                await phone.fill("812345678")
+
+            # Set pickup location (hidden input — inject via JS)
+            await page.evaluate("""() => {
+                const loc = document.getElementById('pickup-location');
+                if (loc) {
+                    loc.value = 'Chaweng Beach Road, Koh Samui';
+                    loc.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                const lat = document.getElementById('pickup-lat');
+                const lng = document.getElementById('pickup-lng');
+                if (lat) lat.value = '9.5321';
+                if (lng) lng.value = '100.0623';
+                const display = document.getElementById('location-display');
+                if (display) display.textContent = 'Chaweng Beach Road, Koh Samui';
+            }""")
+
+            await page.wait_for_timeout(1000)
             ss = await self.screenshot_b64(page)
-            if date_input:
-                s.done(ss, "Date picker found")
-            else:
-                s.done(ss, "No date picker — date selected at checkout or via note")
+            notes = []
+            if program: notes.append("Program set")
+            if tomorrow: notes.append(f"Date: {tomorrow}")
+            if phone: notes.append("Phone filled")
+            notes.append("Pickup injected")
+            s.done(ss, " | ".join(notes))
         except Exception as e:
-            s.fail(str(e))
+            s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
         s = Step("Add to cart")
         try:
             btn = await page.query_selector(
-                "button[name='add'], form[action*='/cart/add'] button[type='submit'], "
-                "[class*='add-to-cart'], .product-form__submit, "
-                "button:has-text('Add to cart'), button:has-text('Book Now')"
+                ".submit-btn, button[type='submit'], "
+                "button:has-text('Book Now'), button:has-text('Add to cart')"
             )
             if btn:
                 await btn.click()
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(4000)
+                # Verify cart via API
+                cart_data = await page.evaluate("""async () => {
+                    try {
+                        const r = await fetch('/cart.js');
+                        const d = await r.json();
+                        return { items: d.item_count, total: d.total_price / 100 };
+                    } catch(e) { return { items: 0, error: e.message }; }
+                }""")
                 ss = await self.screenshot_b64(page)
-                s.done(ss)
+                items = cart_data.get("items", 0)
+                if items > 0:
+                    s.done(ss, f"Cart: {items} items, {cart_data.get('total', 0)} THB")
+                else:
+                    s.fail(f"Button clicked but cart still empty — form validation may have blocked", ss)
             else:
                 ss = await self.screenshot_b64(page)
-                s.fail("Add to cart button not found", ss)
+                s.fail("Book Now / Add to cart button not found", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
@@ -775,35 +841,90 @@ class BrowserAgent:
             s.fail(str(e))
         steps.append(s)
 
-        s = Step("Select date (if date picker exists)")
+        s = Step("Fill booking form (program, date, phone, pickup)")
         try:
-            date_input = await page.query_selector(
-                "input[type='date'], [class*='datepicker'], [class*='date-picker'], "
-                "select[name*='date'], .booking-date"
-            )
+            # TIK requires: program, date, WhatsApp, pickup location
+            program = await page.query_selector("#program-select")
+            if program:
+                await page.evaluate("""() => {
+                    const sel = document.getElementById('program-select');
+                    if (sel && sel.options.length > 1) {
+                        sel.selectedIndex = 1;
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }""")
+                await page.wait_for_timeout(500)
+
+            # Set date via JS (readonly text input)
+            tomorrow = await page.evaluate("""() => {
+                const d = new Date();
+                d.setDate(d.getDate() + 3);
+                const day = String(d.getDate()).padStart(2, '0');
+                const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                const formatted = day + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+                const dateInput = document.getElementById('tour-date');
+                if (dateInput) {
+                    dateInput.value = formatted;
+                    dateInput.removeAttribute('readonly');
+                    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    const display = document.getElementById('date-display');
+                    if (display) display.querySelector('span').textContent = formatted;
+                    return formatted;
+                }
+                return null;
+            }""")
+
+            phone = await page.query_selector("#whatsapp-number")
+            if phone:
+                await phone.fill("812345678")
+
+            await page.evaluate("""() => {
+                const loc = document.getElementById('pickup-location');
+                if (loc) loc.value = 'Chaweng Beach Road, Koh Samui';
+                const lat = document.getElementById('pickup-lat');
+                const lng = document.getElementById('pickup-lng');
+                if (lat) lat.value = '9.5321';
+                if (lng) lng.value = '100.0623';
+                const display = document.getElementById('location-display');
+                if (display) display.textContent = 'Chaweng Beach Road, Koh Samui';
+            }""")
+
+            await page.wait_for_timeout(1000)
             ss = await self.screenshot_b64(page)
-            if date_input:
-                tag = await date_input.evaluate("el => el.tagName")
-                s.done(ss, f"Date picker found ({tag})")
-            else:
-                s.done(ss, "No date picker — date via checkout notes")
+            notes = []
+            if program: notes.append("Program set")
+            if tomorrow: notes.append(f"Date: {tomorrow}")
+            if phone: notes.append("Phone filled")
+            notes.append("Pickup injected")
+            s.done(ss, " | ".join(notes))
         except Exception as e:
-            s.fail(str(e))
+            s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
 
         s = Step("Add to cart")
         try:
             btn = await page.query_selector(
-                "button[name='add'], form[action*='/cart/add'] button[type='submit'], "
-                ".product-form__submit, button:has-text('Add to cart'), button:has-text('Book Now')"
+                ".submit-btn, button[type='submit'], "
+                "button:has-text('Book Now'), button:has-text('Add to cart')"
             )
             if btn:
                 await btn.click()
                 await page.wait_for_timeout(4000)
+                cart_data = await page.evaluate("""async () => {
+                    try {
+                        const r = await fetch('/cart.js');
+                        const d = await r.json();
+                        return { items: d.item_count, total: d.total_price / 100 };
+                    } catch(e) { return { items: 0, error: e.message }; }
+                }""")
                 ss = await self.screenshot_b64(page)
-                s.done(ss, "Added to cart")
+                items = cart_data.get("items", 0)
+                if items > 0:
+                    s.done(ss, f"Cart: {items} items, {cart_data.get('total', 0)} THB")
+                else:
+                    s.fail("Button clicked but cart still empty — form validation blocked", ss)
             else:
-                s.fail("Add to cart button not found", await self.screenshot_b64(page))
+                s.fail("Book Now button not found", await self.screenshot_b64(page))
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
