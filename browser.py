@@ -919,15 +919,6 @@ class BrowserAgent:
         # ─── STEP 4: Pick date ─────────────────────────────────────
         s = Step("Select tour date")
         try:
-            # Click the date button to open calendar modal
-            date_btn = await page.query_selector("#date-display, .date-input, #tour-date")
-            if date_btn:
-                await date_btn.click()
-                await page.wait_for_timeout(1000)
-
-            # Calendar modal should be open — click a date 3 days from now
-            # The calendar renders days as clickable elements
-            # Inject the date value directly (calendar widget varies) then close modal
             tour_date = params.get("date", "")
             if not tour_date:
                 tour_date = await page.evaluate("""() => {
@@ -938,39 +929,44 @@ class BrowserAgent:
                     return day + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
                 }""")
 
-            # Try clicking a date cell in the calendar first
-            date_clicked = await page.evaluate(f"""() => {{
-                // Look for clickable date cells
-                const cells = document.querySelectorAll('.calendar-day:not(.disabled):not(.past), .day-cell:not(.disabled)');
-                // Click one that's at least 3 days ahead
-                for (const cell of cells) {{
-                    const dayNum = parseInt(cell.textContent);
-                    if (dayNum > 0) {{
-                        cell.click();
-                        return true;
-                    }}
-                }}
+            # Try opening the date picker modal via JS, then click a date
+            modal_opened = await page.evaluate("""() => {
+                if (typeof openDatePicker === 'function') { openDatePicker(); return true; }
+                const modal = document.getElementById('date-picker-modal');
+                if (modal) { modal.style.display = 'flex'; return true; }
                 return false;
-            }}""")
+            }""")
 
-            if not date_clicked:
-                # Fallback: set value directly
-                await page.evaluate(f"""() => {{
-                    const dateInput = document.getElementById('tour-date');
-                    if (dateInput) {{
-                        dateInput.value = '{tour_date}';
-                        dateInput.removeAttribute('readonly');
-                        dateInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                    const display = document.getElementById('date-display');
-                    if (display) {{
-                        const span = display.querySelector('span');
-                        if (span) span.textContent = '{tour_date}';
-                    }}
-                    // Close modal if open
-                    const modal = document.getElementById('date-picker-modal');
-                    if (modal) modal.style.display = 'none';
-                }}""")
+            if modal_opened:
+                await page.wait_for_timeout(1500)
+                # Try clicking a future date cell in the calendar
+                date_clicked = await page.evaluate("""() => {
+                    const cells = document.querySelectorAll('.calendar-day:not(.disabled):not(.past):not(.blocked), .day-cell:not(.disabled)');
+                    for (const cell of cells) {
+                        const dayNum = parseInt(cell.textContent);
+                        if (dayNum > 0) { cell.click(); return true; }
+                    }
+                    return false;
+                }""")
+                await page.wait_for_timeout(500)
+
+            # Always ensure the hidden input has a value (calendar click may or may not set it)
+            await page.evaluate(f"""() => {{
+                const dateInput = document.getElementById('tour-date');
+                if (dateInput && !dateInput.value) {{
+                    dateInput.value = '{tour_date}';
+                    dateInput.removeAttribute('readonly');
+                    dateInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                const display = document.getElementById('date-display');
+                if (display) {{
+                    const span = display.querySelector('span');
+                    if (span) span.textContent = dateInput?.value || '{tour_date}';
+                }}
+                // Close modal if open
+                const modal = document.getElementById('date-picker-modal');
+                if (modal) modal.style.display = 'none';
+            }}""")
 
             await page.wait_for_timeout(500)
             # Verify date is set
