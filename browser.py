@@ -1670,21 +1670,46 @@ class BrowserAgent:
             s.done(None, f"No cookie popup or handled: {str(e)}")
         steps.append(s)
 
-        # Step 3: Login
+        # Step 3: Login (multi-step: email -> password -> submit)
         s = Step("Login to GYG Supplier Portal")
         try:
+            # Step 3a: Fill email and submit (GYG uses two-step login)
             email_input = await page.query_selector("input[name='email'], input[type='email'], #email")
             if email_input:
                 await email_input.click()
-                await email_input.fill(email)
+                await email_input.fill("")
+                await page.wait_for_timeout(300)
+                await email_input.type(email, delay=30)
                 await page.wait_for_timeout(500)
 
+                # Look for Continue/Next button after email
+                continue_btn = await page.query_selector("button:has-text('Continue'), button:has-text('Next'), button[type='submit']:not(:has-text('Log in')):not(:has-text('Sign in'))")
+                if continue_btn:
+                    await continue_btn.click()
+                    await page.wait_for_timeout(2000)
+                else:
+                    # If no Continue button, try pressing Enter
+                    await email_input.press("Enter")
+                    await page.wait_for_timeout(2000)
+
+            # Step 3b: Wait for password field to appear and fill it
+            try:
+                await page.wait_for_selector("input[name='password'], input[type='password'], #password", timeout=5000)
+            except:
+                pass  # Password field might already be visible
+
+            await page.wait_for_timeout(500)
             pw_input = await page.query_selector("input[name='password'], input[type='password'], #password")
             if pw_input:
                 await pw_input.click()
-                await pw_input.fill(password)
+                await page.wait_for_timeout(300)
+                await pw_input.fill("")
+                await page.wait_for_timeout(200)
+                # Use type() with delay instead of fill() for better reliability
+                await pw_input.type(password, delay=50)
                 await page.wait_for_timeout(500)
 
+            # Step 3c: Click login button
             login_btn = await page.query_selector("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')")
             if login_btn:
                 await login_btn.click()
