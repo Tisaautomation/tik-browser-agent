@@ -1644,13 +1644,15 @@ class BrowserAgent:
         s = Step("Navigate to GYG Supplier Portal login")
         try:
             await page.goto(f"{GYG_URL}/login", wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
-            login_form = await page.query_selector("input[name='email'], input[type='email'], #email")
-            if login_form:
-                s.done(ss, "GYG login page loaded")
+            # Use broad selectors - GYG form uses placeholder text
+            all_inputs = await page.query_selector_all("input")
+            form_inputs = [inp for inp in all_inputs]
+            if len(form_inputs) >= 2:
+                s.done(ss, f"GYG login page loaded, found {len(form_inputs)} inputs")
             else:
-                s.fail("Login form not found", ss)
+                s.fail(f"Login form not found, only {len(form_inputs)} inputs", ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page) if page else None)
         steps.append(s)
@@ -1661,67 +1663,83 @@ class BrowserAgent:
         # Step 2: Accept cookies if present
         s = Step("Handle cookies popup")
         try:
-            cookie_btn = await page.query_selector("button:has-text('I agree'), button:has-text('Accept'), button:has-text('agree'), [data-testid='cookie-accept']")
-            if cookie_btn:
-                await cookie_btn.click()
-                await page.wait_for_timeout(1000)
+            # Try multiple cookie selectors
+            for selector in [
+                "button:has-text('I agree')",
+                "button:has-text('Accept')",
+                "a:has-text('I agree')",
+                "[data-testid='cookie-accept']",
+                "button.cookie-accept",
+            ]:
+                cookie_btn = await page.query_selector(selector)
+                if cookie_btn:
+                    await cookie_btn.click()
+                    await page.wait_for_timeout(1500)
+                    break
             s.done(None, "Cookies handled")
         except Exception as e:
-            s.done(None, f"No cookie popup or handled: {str(e)}")
+            s.done(None, f"Cookie handling: {str(e)}")
         steps.append(s)
 
-        # Step 3: Login (multi-step: email -> password -> submit)
+        # Step 3: Login (single page - both email and password visible)
         s = Step("Login to GYG Supplier Portal")
         try:
-            # Step 3a: Fill email and submit (GYG uses two-step login)
-            email_input = await page.query_selector("input[name='email'], input[type='email'], #email")
+            # GYG login has both fields on one page
+            # Find all inputs and use position: first = email, second = password
+            all_inputs = await page.query_selector_all("input")
+            email_input = None
+            pw_input = None
+            for inp in all_inputs:
+                inp_type = await inp.get_attribute("type") or ""
+                inp_placeholder = await inp.get_attribute("placeholder") or ""
+                inp_name = await inp.get_attribute("name") or ""
+                if "email" in inp_type.lower() or "email" in inp_name.lower() or "email" in inp_placeholder.lower():
+                    email_input = inp
+                elif "password" in inp_type.lower() or "password" in inp_name.lower() or "password" in inp_placeholder.lower():
+                    pw_input = inp
+
+            # Fallback: first two visible inputs
+            if not email_input and len(all_inputs) >= 1:
+                email_input = all_inputs[0]
+            if not pw_input and len(all_inputs) >= 2:
+                pw_input = all_inputs[1]
+
             if email_input:
                 await email_input.click()
-                await email_input.fill("")
                 await page.wait_for_timeout(300)
-                await email_input.type(email, delay=30)
+                await email_input.fill(email)
                 await page.wait_for_timeout(500)
 
-                # Look for Continue/Next button after email
-                continue_btn = await page.query_selector("button:has-text('Continue'), button:has-text('Next'), button[type='submit']:not(:has-text('Log in')):not(:has-text('Sign in'))")
-                if continue_btn:
-                    await continue_btn.click()
-                    await page.wait_for_timeout(2000)
-                else:
-                    # If no Continue button, try pressing Enter
-                    await email_input.press("Enter")
-                    await page.wait_for_timeout(2000)
-
-            # Step 3b: Wait for password field to appear and fill it
-            try:
-                await page.wait_for_selector("input[name='password'], input[type='password'], #password", timeout=5000)
-            except:
-                pass  # Password field might already be visible
-
-            await page.wait_for_timeout(500)
-            pw_input = await page.query_selector("input[name='password'], input[type='password'], #password")
             if pw_input:
                 await pw_input.click()
                 await page.wait_for_timeout(300)
-                await pw_input.fill("")
-                await page.wait_for_timeout(200)
-                # Use type() with delay instead of fill() for better reliability
-                await pw_input.type(password, delay=50)
+                await pw_input.fill(password)
                 await page.wait_for_timeout(500)
 
-            # Step 3c: Click login button
-            login_btn = await page.query_selector("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')")
+            # Screenshot before submit to verify fields filled
+            pre_ss = await self.screenshot_b64(page)
+
+            # Click login button
+            login_btn = await page.query_selector("button:has-text('Log in'), button:has-text('Sign in'), button[type='submit']")
             if login_btn:
                 await login_btn.click()
+            else:
+                # Press Enter as fallback
+                if pw_input:
+                    await pw_input.press("Enter")
+
+            try:
                 await page.wait_for_load_state("networkidle", timeout=30000)
-                await page.wait_for_timeout(3000)
+            except:
+                pass
+            await page.wait_for_timeout(3000)
 
             ss = await self.screenshot_b64(page)
             current_url = page.url
             if "/login" not in current_url:
                 s.done(ss, f"Logged in, now at: {current_url}")
             else:
-                s.fail("Still on login page after submit", ss)
+                s.fail("Still on login page after submit", pre_ss)
         except Exception as e:
             s.fail(str(e), await self.screenshot_b64(page))
         steps.append(s)
