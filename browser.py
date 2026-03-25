@@ -53,7 +53,12 @@ class BrowserAgent:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ]
             )
         return self._browser
 
@@ -61,10 +66,23 @@ class BrowserAgent:
         browser = await self._get_browser()
         context = await browser.new_context(
             viewport=self.viewport,
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" if "mobile" in self.viewport_name else "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="en-US"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" if "desktop" in self.viewport_name else "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            locale="en-US",
+            permissions=[],
+            geolocation={"latitude": 9.5, "longitude": 100.0},
+            timezone_id="Asia/Bangkok",
+            device_scale_factor=1
         )
         page = await context.new_page()
+
+        # Stealth: inject script to hide automation detection
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => false,
+            });
+            window.chrome = { runtime: {} };
+        """)
+
         return page
 
     async def screenshot_b64(self, page: Page) -> str:
