@@ -1632,6 +1632,7 @@ class BrowserAgent:
         GYG_URL = "https://supplier.getyourguide.com"
         email = params.get("email", "info@tourinkohsamui.com")
         password = params.get("password", "")
+        mfa_code = params.get("mfa_code", "")  # 2FA code if needed
         tour_title = params.get("title", "")
         tour_description = params.get("description", "")
         tour_duration = params.get("duration", "6 hours")
@@ -1683,7 +1684,7 @@ class BrowserAgent:
             s.done(None, f"Cookie handling: {str(e)}")
         steps.append(s)
 
-        # Step 3: Login with CAPTCHA handling
+        # Step 3: Login with 2FA and CAPTCHA handling
         s = Step("Login to GYG Supplier Portal")
         try:
             # Get all inputs - email and password fields
@@ -1707,36 +1708,55 @@ class BrowserAgent:
                 if login_btn:
                     await login_btn.click()
 
-                # Wait for potential CAPTCHA or redirect
-                await page.wait_for_timeout(2000)
+                # Wait for potential MFA, CAPTCHA or redirect
+                await page.wait_for_timeout(3000)
                 ss = await self.screenshot_b64(page)
 
-                # Check if CAPTCHA appeared
-                captcha_detected = await page.query_selector("iframe[src*='recaptcha'], #recaptcha, .g_recaptcha, [data-captcha]")
-                if captcha_detected:
-                    # CAPTCHA bypass: Wait 8 seconds (GYG may timeout the challenge) then try to proceed
-                    s.done(ss, "CAPTCHA detected - attempting timeout bypass (8 sec wait)")
-                    await page.wait_for_timeout(8000)
-                    # Try clicking any button that appeared after CAPTCHA
-                    try:
-                        proceed = await page.query_selector("button:not(:disabled), a[href*='/activity']")
-                        if proceed:
-                            await proceed.click()
-                            await page.wait_for_timeout(2000)
-                    except:
-                        pass
-                else:
-                    # No CAPTCHA, check if logged in
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=20000)
-                    except:
-                        pass
+                # Check if 2FA/MFA code input appeared
+                mfa_input = await page.query_selector("input[name='code'], input[name='mfa'], input[name='verification'], input[placeholder*='code'], input[placeholder*='verification']")
+                if mfa_input and mfa_code:
+                    # Fill MFA code
+                    await mfa_input.click()
+                    await page.wait_for_timeout(200)
+                    await mfa_input.fill(mfa_code)
+                    await page.wait_for_timeout(300)
 
-                    current_url = page.url
-                    if "/login" not in current_url:
-                        s.done(ss, f"Logged in, now at: {current_url}")
+                    # Click verify button
+                    verify_btn = await page.query_selector("button:has-text('Verify'), button:has-text('Continue'), button[type='submit']")
+                    if verify_btn:
+                        await verify_btn.click()
+                        await page.wait_for_timeout(2000)
+
+                    ss = await self.screenshot_b64(page)
+                    s.done(ss, "2FA code submitted")
+                elif mfa_input and not mfa_code:
+                    s.fail("2FA code required but not provided", ss)
+                else:
+                    # No MFA, check if CAPTCHA appeared
+                    captcha_detected = await page.query_selector("iframe[src*='recaptcha'], #recaptcha, .g_recaptcha, [data-captcha]")
+                    if captcha_detected:
+                        # CAPTCHA bypass: Wait 8 seconds then try to proceed
+                        s.done(ss, "CAPTCHA detected - attempting timeout bypass (8 sec wait)")
+                        await page.wait_for_timeout(8000)
+                        try:
+                            proceed = await page.query_selector("button:not(:disabled), a[href*='/activity']")
+                            if proceed:
+                                await proceed.click()
+                                await page.wait_for_timeout(2000)
+                        except:
+                            pass
                     else:
-                        s.fail("Still on login after submit", ss)
+                        # Check if logged in
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=20000)
+                        except:
+                            pass
+
+                        current_url = page.url
+                        if "/login" not in current_url:
+                            s.done(ss, f"Logged in, now at: {current_url}")
+                        else:
+                            s.fail("Still on login after submit", ss)
             else:
                 s.fail("Email/password inputs not found", await self.screenshot_b64(page))
         except Exception as e:
