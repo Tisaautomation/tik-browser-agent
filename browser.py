@@ -1714,22 +1714,33 @@ class BrowserAgent:
 
                 # Check if 2FA/MFA code input appeared
                 mfa_input = await page.query_selector("input[name='code'], input[name='mfa'], input[name='verification'], input[placeholder*='code'], input[placeholder*='verification']")
-                if mfa_input and mfa_code:
-                    # Fill MFA code
-                    await mfa_input.click()
-                    await page.wait_for_timeout(200)
-                    await mfa_input.fill(mfa_code)
-                    await page.wait_for_timeout(300)
+                if mfa_input:
+                    # Try to extract MFA code from Gmail if not provided
+                    if not mfa_code:
+                        gmail_password = params.get("gmail_password", password)  # Fall back to main password
+                        extracted_code = await self._extract_gyg_mfa_code(email, gmail_password)
+                        if extracted_code:
+                            mfa_code = extracted_code
+                            s.done(None, f"MFA code extracted from Gmail: {mfa_code[:2]}****{mfa_code[-2:]}")
 
-                    # Click verify button
-                    verify_btn = await page.query_selector("button:has-text('Verify'), button:has-text('Continue'), button[type='submit']")
-                    if verify_btn:
-                        await verify_btn.click()
-                        await page.wait_for_timeout(2000)
+                    if mfa_code:
+                        # Fill MFA code
+                        await mfa_input.click()
+                        await page.wait_for_timeout(200)
+                        await mfa_input.fill(mfa_code)
+                        await page.wait_for_timeout(300)
 
-                    ss = await self.screenshot_b64(page)
-                    s.done(ss, "2FA code submitted")
-                elif mfa_input and not mfa_code:
+                        # Click verify button
+                        verify_btn = await page.query_selector("button:has-text('Verify'), button:has-text('Continue'), button[type='submit']")
+                        if verify_btn:
+                            await verify_btn.click()
+                            await page.wait_for_timeout(2000)
+
+                        ss = await self.screenshot_b64(page)
+                        s.done(ss, "2FA code submitted")
+                    else:
+                        s.fail("2FA code required but could not extract from Gmail", ss)
+                elif mfa_input:
                     s.fail("2FA code required but not provided", ss)
                 else:
                     # No MFA, check if CAPTCHA appeared
@@ -1920,3 +1931,51 @@ class BrowserAgent:
         steps.append(s)
 
         await page.close()
+
+    async def _extract_gyg_mfa_code(self, email: str, password: str) -> str:
+        """Extract GYG MFA code from Gmail inbox"""
+        import imaplib
+        import email as email_module
+        import re
+        import time
+        
+        try:
+            # Connect to Gmail IMAP
+            imap = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            imap.login(email, password)
+            imap.select("INBOX")
+            
+            # Search for recent GYG emails
+            status, messages = imap.search(None, 'FROM "noreply@getyourguide" OR FROM "support@getyourguide"')
+            
+            if messages and messages[0]:
+                # Get the most recent email
+                msg_ids = messages[0].split()
+                if msg_ids:
+                    latest_id = msg_ids[-1]
+                    status, msg_data = imap.fetch(latest_id, "(RFC822)")
+                    msg = email_module.message_from_bytes(msg_data[0][1])
+                    
+                    # Extract body
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                body = part.get_payload(decode=True).decode()
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode()
+                    
+                    # Find 6-digit code
+                    match = re.search(r'\b(\d{6})\b', body)
+                    if match:
+                        code = match.group(1)
+                        imap.close()
+                        imap.logout()
+                        return code
+            
+            imap.close()
+            imap.logout()
+            return ""
+        except Exception as e:
+            print(f"Gmail MFA extraction error: {str(e)}")
+            return ""
