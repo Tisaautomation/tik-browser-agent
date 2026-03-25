@@ -1664,7 +1664,11 @@ class BrowserAgent:
         # Step 1: Navigate to GYG login
         s = Step("Navigate to GYG Supplier Portal login")
         try:
-            await page.goto(f"{GYG_URL}/login", wait_until="domcontentloaded", timeout=45000)
+            try:
+                await page.goto(f"{GYG_URL}/login", wait_until="load", timeout=40000)
+            except:
+                # If load times out, try with just domcontentloaded
+                await page.goto(f"{GYG_URL}/login", wait_until="domcontentloaded", timeout=15000)
             await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
             # Use broad selectors - GYG form uses placeholder text
