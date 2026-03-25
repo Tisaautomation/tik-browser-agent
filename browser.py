@@ -1646,7 +1646,7 @@ class BrowserAgent:
         # Step 1: Navigate to GYG login
         s = Step("Navigate to GYG Supplier Portal login")
         try:
-            await page.goto(f"{GYG_URL}/login", wait_until="networkidle", timeout=30000)
+            await page.goto(f"{GYG_URL}/login", wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(3000)
             ss = await self.screenshot_b64(page)
             # Use broad selectors - GYG form uses placeholder text
@@ -1715,13 +1715,9 @@ class BrowserAgent:
                 # Check if 2FA/MFA code input appeared
                 mfa_input = await page.query_selector("input[name='code'], input[name='mfa'], input[name='verification'], input[placeholder*='code'], input[placeholder*='verification']")
                 if mfa_input:
-                    # Try to extract MFA code from Gmail if not provided
+                    # Use provided MFA code or fallback to static code
                     if not mfa_code:
-                        gmail_password = params.get("gmail_password", password)  # Fall back to main password
-                        extracted_code = await self._extract_gyg_mfa_code(email, gmail_password)
-                        if extracted_code:
-                            mfa_code = extracted_code
-                            s.done(None, f"MFA code extracted from Gmail: {mfa_code[:2]}****{mfa_code[-2:]}")
+                        mfa_code = "53518"  # Static GYG MFA code
 
                     if mfa_code:
                         # Fill MFA code
