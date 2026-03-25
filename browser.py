@@ -132,6 +132,7 @@ class BrowserAgent:
             "email_confirmation_check": self._scenario_email_check,
             "mystery_shopper": self._scenario_mystery_shopper,
             "provider_response": self._scenario_provider_response,
+            "gyg_create_tour": self._scenario_gyg_create_tour,
         }
         handler = handlers.get(scenario)
         if not handler:
@@ -1619,6 +1620,195 @@ class BrowserAgent:
         try:
             ss = await self.screenshot_b64(page)
             s.done(ss, f"Action '{action}' completed")
+        except Exception as e:
+            s.fail(str(e))
+        steps.append(s)
+
+        await page.close()
+
+    # ─── SCENARIO: GYG Create Tour ────────────────────────────────
+    async def _scenario_gyg_create_tour(self, steps: List[Step], params: Dict):
+        """Create a tour activity in GetYourGuide Supplier Portal"""
+        GYG_URL = "https://supplier.getyourguide.com"
+        email = params.get("email", "")
+        password = params.get("password", "")
+        tour_title = params.get("title", "")
+        tour_description = params.get("description", "")
+        tour_duration = params.get("duration", "")
+        tour_location = params.get("location", "Koh Samui, Thailand")
+        save_draft = params.get("save_draft", True)
+
+        page = await self.new_page()
+
+        # Step 1: Navigate to GYG login
+        s = Step("Navigate to GYG Supplier Portal login")
+        try:
+            await page.goto(f"{GYG_URL}/login", wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(2000)
+            ss = await self.screenshot_b64(page)
+            login_form = await page.query_selector("input[name='email'], input[type='email'], #email")
+            if login_form:
+                s.done(ss, "GYG login page loaded")
+            else:
+                s.fail("Login form not found", ss)
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page) if page else None)
+        steps.append(s)
+        if s.status == "FAIL":
+            await page.close()
+            return
+
+        # Step 2: Accept cookies if present
+        s = Step("Handle cookies popup")
+        try:
+            cookie_btn = await page.query_selector("button:has-text('I agree'), button:has-text('Accept'), button:has-text('agree'), [data-testid='cookie-accept']")
+            if cookie_btn:
+                await cookie_btn.click()
+                await page.wait_for_timeout(1000)
+            s.done(None, "Cookies handled")
+        except Exception as e:
+            s.done(None, f"No cookie popup or handled: {str(e)}")
+        steps.append(s)
+
+        # Step 3: Login
+        s = Step("Login to GYG Supplier Portal")
+        try:
+            email_input = await page.query_selector("input[name='email'], input[type='email'], #email")
+            if email_input:
+                await email_input.click()
+                await email_input.fill(email)
+                await page.wait_for_timeout(500)
+
+            pw_input = await page.query_selector("input[name='password'], input[type='password'], #password")
+            if pw_input:
+                await pw_input.click()
+                await pw_input.fill(password)
+                await page.wait_for_timeout(500)
+
+            login_btn = await page.query_selector("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')")
+            if login_btn:
+                await login_btn.click()
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await page.wait_for_timeout(3000)
+
+            ss = await self.screenshot_b64(page)
+            current_url = page.url
+            if "/login" not in current_url:
+                s.done(ss, f"Logged in, now at: {current_url}")
+            else:
+                s.fail("Still on login page after submit", ss)
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+        if s.status == "FAIL":
+            await page.close()
+            return
+
+        # Step 4: Navigate to create new activity
+        s = Step("Navigate to create new activity")
+        try:
+            add_btn = await page.query_selector("a:has-text('Add'), a:has-text('Create'), button:has-text('Add activity'), button:has-text('New activity'), a:has-text('new activity')")
+            if add_btn:
+                await add_btn.click()
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await page.wait_for_timeout(2000)
+            else:
+                await page.goto(f"{GYG_URL}/activity/new", wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(2000)
+            ss = await self.screenshot_b64(page)
+            s.done(ss, f"Create activity page: {page.url}")
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # Step 5: Fill activity title
+        s = Step(f"Fill activity title: {tour_title[:50]}")
+        try:
+            title_input = await page.query_selector("input[name='title'], input[name='name'], input[placeholder*='title'], input[placeholder*='name'], #title, #activity-title")
+            if title_input:
+                await title_input.click()
+                await title_input.fill(tour_title)
+                await page.wait_for_timeout(500)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Title set: {tour_title[:60]}")
+            else:
+                ss = await self.screenshot_b64(page)
+                s.fail("Title input not found", ss)
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # Step 6: Fill description
+        s = Step("Fill activity description")
+        try:
+            desc_input = await page.query_selector("textarea[name='description'], textarea[name='about'], #description, [contenteditable='true'], textarea")
+            if desc_input:
+                await desc_input.click()
+                await desc_input.fill(tour_description[:5000])
+                await page.wait_for_timeout(500)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Description filled ({len(tour_description)} chars)")
+            else:
+                ss = await self.screenshot_b64(page)
+                s.fail("Description input not found", ss)
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # Step 7: Set location
+        s = Step(f"Set location: {tour_location}")
+        try:
+            loc_input = await page.query_selector("input[name='location'], input[placeholder*='location'], input[placeholder*='city'], #location")
+            if loc_input:
+                await loc_input.click()
+                await loc_input.fill("")
+                await loc_input.type(tour_location, delay=50)
+                await page.wait_for_timeout(2000)
+                suggestion = await page.query_selector("[role='option'], .autocomplete-item, li:has-text('Samui')")
+                if suggestion:
+                    await suggestion.click()
+                    await page.wait_for_timeout(1000)
+                ss = await self.screenshot_b64(page)
+                s.done(ss, f"Location set: {tour_location}")
+            else:
+                ss = await self.screenshot_b64(page)
+                s.done(ss, "Location field not found")
+        except Exception as e:
+            s.fail(str(e), await self.screenshot_b64(page))
+        steps.append(s)
+
+        # Step 8: Screenshot form before save
+        s = Step("Screenshot form state before save")
+        try:
+            ss = await self.screenshot_b64(page)
+            s.done(ss, f"Current URL: {page.url}")
+        except Exception as e:
+            s.fail(str(e))
+        steps.append(s)
+
+        # Step 9: Save as draft
+        if save_draft:
+            s = Step("Save as DRAFT")
+            try:
+                save_btn = await page.query_selector("button:has-text('Save'), button:has-text('Draft'), button:has-text('Save as draft'), button[type='submit']:has-text('Save')")
+                if save_btn:
+                    await save_btn.click()
+                    await page.wait_for_load_state("networkidle", timeout=30000)
+                    await page.wait_for_timeout(3000)
+                    ss = await self.screenshot_b64(page)
+                    s.done(ss, "Saved as draft")
+                else:
+                    ss = await self.screenshot_b64(page)
+                    s.fail("Save/Draft button not found", ss)
+            except Exception as e:
+                s.fail(str(e), await self.screenshot_b64(page))
+            steps.append(s)
+
+        # Final screenshot
+        s = Step("Final state")
+        try:
+            ss = await self.screenshot_b64(page)
+            s.done(ss, f"GYG tour creation completed. URL: {page.url}")
         except Exception as e:
             s.fail(str(e))
         steps.append(s)
